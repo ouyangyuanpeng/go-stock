@@ -6,47 +6,38 @@ import {
   HistogramSeries,
   LineSeries,
   LineStyle,
-  TickMarkType,
 } from 'lightweight-charts'
-import { NButton, NFlex, NInput, NSpin, NText } from 'naive-ui'
+import { NButton, NFlex, NInput, NSpin, NText, NTooltip } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  smaValues, emaFinite, emaLeadingNull, weightedMaValues, bollingerBands, obvValues,
+  macdBundle, kdjBundle, rsiBundle, atrValues, vwapValues, mfiValues, kamaValues,
+  keltnerChannelValues, supertrendValues, ichimokuValues, cciValues, ttmSqueezeValues,
+  sarValues, donchianChannelValues, adxValues, williamsRValues, stochRsiValues,
+  cmfValues, aroonValues, cmoValues, forceIndexValues, pivotPointsValues, demaValues,
+  zigzagValues, satsValues, alligatorValues, aoValues, hullMaValues, adValues,
+  trixValues, rocValues, fractalValues, chopValues, elderRayValues, chaikinOscValues,
+  vwapBandsValues, massIndexValues, ulcerIndexValues, coppockValues, temaValues, smiValues, smcValues,
+} from './kline/calc'
+import { makeToggle } from './kline/indicators/toggle'
+import { parseNumStr, formatPrice2, formatVolumeCn, formatAmountCn, formatPctField, formatSigned2 } from './kline/format'
+import {
+  eastMoneyDayToUnixSeconds, eastMoneyKlineFieldToUnixSeconds, chartTimeToUtcMs,
+  formatTickTime, sortKey, toChartTime, mergeKlineRows, mergeRefreshWithLatest,
+  extractYmdDatePart, barSecondsForMinuteKlt,
+} from './kline/time'
 
-/** A 股配色：涨红跌绿 */
-const CLR_RISE = '#ef5350'
-const CLR_FALL = '#26a69a'
-
-/** 东方财富 klt；日/周/月/季/年：横轴只显示日期 */
-const DAILY_LIKE_KLT = new Set(['101', '102', '103', '104', '106'])
-const CN_TZ = 'Asia/Shanghai'
-
-/** 向左拖动接近左侧边缘时，请求更早 K 线 */
-const HISTORY_PAGE_SIZE = 400
-const BARS_BEFORE_LOAD_MORE = 45
-/** 首次加载 / 切换周期后默认可见 K 线根数（过密时看不清） */
-const DEFAULT_VISIBLE_BARS = 180
-/** 逻辑坐标上右侧多留的「空档」，最新 K 不靠最右边（与左拖分页后的 range 平移兼容） */
-const DEFAULT_RIGHT_LOGICAL_GAP = 18
-/** 为 false 时不在 K 线工具栏显示「筹码分布」按钮（计算与面板逻辑仍保留） */
-const SHOW_CHIP_TOOLBAR_BUTTON = false
-
-const INTERVALS = [
-  { klt: '1', label: '1分', limit: 1000 },
-  { klt: '5', label: '5分', limit: 600 },
-  { klt: '15', label: '15分', limit: 500 },
-  { klt: '30', label: '30分', limit: 500 },
-  { klt: '60', label: '60分', limit: 500 },
-  { klt: '101', label: '日K', limit: 800 },
-  { klt: '102', label: '周K', limit: 520 },
-  { klt: '103', label: '月K', limit: 240 },
-  { klt: '104', label: '季K', limit: 120 },
-  { klt: '106', label: '年K', limit: 40 },
-]
+import {
+  CLR_RISE, CLR_FALL, DAILY_LIKE_KLT, CN_TZ,
+  HISTORY_PAGE_SIZE, BARS_BEFORE_LOAD_MORE, DEFAULT_VISIBLE_BARS,
+  DEFAULT_RIGHT_LOGICAL_GAP, SHOW_CHIP_TOOLBAR_BUTTON, INTERVALS,
+} from './kline/constants'
 
 const props = defineProps({
   code: { type: String, default: '' },
   stockName: { type: String, default: '' },
   darkTheme: { type: Boolean, default: false },
-  chartHeight: { type: Number, default: 460 },
+  chartHeight: { type: Number, default: 400 },
   /** 定时拉取当前周期最新 K 线，毫秒；0 关闭；默认 60 秒 */
   realtimeIntervalMs: { type: Number, default: 1000*60 },
   /** 多单开仓价；传入则与内部输入同步，未传入（undefined）时不向父组件 emit */
@@ -77,6 +68,48 @@ const showOBV = ref(false)
 const showMACD = ref(false)
 const showKDJ = ref(false)
 const showRSI = ref(false)
+const showATR = ref(false)
+const showVWAP = ref(false)
+const showMFI = ref(false)
+const showKAMA = ref(false)
+const showKeltner = ref(false)
+const showSupertrend = ref(false)
+const showEMA = ref(false)
+const showIchimoku = ref(false)
+const showCCI = ref(false)
+const showTTMSqueeze = ref(false)
+const showSAR = ref(false)
+const showDonchian = ref(false)
+const showADX = ref(false)
+const showWilliamsR = ref(false)
+const showStochRSI = ref(false)
+const showCMF = ref(false)
+const showAroon = ref(false)
+const showCMO = ref(false)
+const showForceIndex = ref(false)
+const showPivot = ref(false)
+const showDEMA = ref(false)
+const showZigZag = ref(false)
+const showSATS = ref(false)
+const showAvgAmp = ref(false)
+const showAlligator = ref(false)
+const showAO = ref(false)
+const showHullMA = ref(false)
+const showAD = ref(false)
+const showTRIX = ref(false)
+const showROC = ref(false)
+const showFractal = ref(false)
+const showCHOP = ref(false)
+const showElderRay = ref(false)
+const showChaikinOsc = ref(false)
+const showVWAPBands = ref(false)
+const showMassIndex = ref(false)
+const showUlcerIndex = ref(false)
+const showCoppock = ref(false)
+const showTEMA = ref(false)
+const showSMI = ref(false)
+const showSignalRatio = ref(false)
+const showSMC = ref(false)
 const showChip = ref(false)
 const chipBins = ref(80)
 const chipCanvasRef = ref(null)
@@ -106,6 +139,8 @@ let volSeries = null
 let pollTimer = null
 /** 已合并的后端原始 K 线（按时间升序） */
 let mergedRawRows = []
+/** 每次 mergedRawRows 变更后递增，供 computed 感知变化 */
+const mergedRawRowsVersion = ref(0)
 const hasMoreOlder = ref(true)
 let loadOlderDebounceTimer = null
 /** Wails/WebView 下可见区回调偶发不触发，用轻量轮询兜底 */
@@ -155,7 +190,92 @@ const ind = {
   kdjD: null,
   kdjJ: null,
   rsi: null,
+  atr: null,
+  vwap: null,
+  mfi: null,
+  kama: null,
+  keltnerU: null,
+  keltnerM: null,
+  keltnerL: null,
+  supertrend: null,
+  ema12: null,
+  ema21: null,
+  ichTenkan: null,
+  ichKijun: null,
+  ichSpanA: null,
+  ichSpanB: null,
+  ichChikou: null,
+  cci: null,
+  ttmHist: null,
+  ttmDots: null,
+  sar: null,
+  donchianU: null,
+  donchianM: null,
+  donchianL: null,
+  adx: null,
+  adxDiP: null,
+  adxDiM: null,
+  williamsR: null,
+  stochRsi: null,
+  stochRsiD: null,
+  cmf: null,
+  aroonUp: null,
+  aroonDown: null,
+  cmo: null,
+  forceIndex: null,
+  pivotPP: null,
+  pivotS1: null,
+  pivotS2: null,
+  pivotR1: null,
+  pivotR2: null,
+  dema: null,
+  zigzag: null,
+  satsLine: null,
+  satsUpper: null,
+  satsLower: null,
+  avgAmp5: null,
+  avgAmp10: null,
+  avgAmp20: null,
+  alligatorJaw: null,
+  alligatorTeeth: null,
+  alligatorLips: null,
+  aoLine: null,
+  aoHist: null,
+  hullMA: null,
+  adLine: null,
+  trixLine: null,
+  trixSignal: null,
+  rocLine: null,
+  fractalHigh: null,
+  fractalLow: null,
+  chopLine: null,
+  elderBull: null,
+  elderBear: null,
+  chaikinOscLine: null,
+  vwapBandsU: null,
+  vwapBandsM: null,
+  vwapBandsL: null,
+  massIndexLine: null,
+  ulcerLine: null,
+  coppockLine: null,
+  temaLine: null,
+  smiLine: null,
+  smiSignal: null,
+  smcSwingHigh: null,
+  smcSwingLow: null,
+  smcIntHigh: null,
+  smcIntLow: null,
+  smcBos: null,
+  smcChoch: null,
+  smcSwBos: null,
+  smcSwChoch: null,
+  smcFvgTop: null,
+  smcFvgBot: null,
+  smcObTop: null,
+  smcObBot: null,
 }
+
+import { indicatorTips } from './kline/indicators/tips'
 
 function removeSeriesSafe(api) {
   if (!api || !chart) return null
@@ -172,10 +292,12 @@ function removeSeriesSafe(api) {
 function extractOHLCV(rows) {
   const sorted = [...(rows || [])].sort((a, b) => sortKey(a.day) - sortKey(b.day))
   const times = []
+  const opens = []
   const closes = []
   const highs = []
   const lows = []
   const vols = []
+  const amplitudes = []
   for (const r of sorted) {
     const t = toChartTime(r.day)
     if (t === null) continue
@@ -186,63 +308,31 @@ function extractOHLCV(rows) {
     const v = Number(r.volume)
     if (![o, h, l, c].every(Number.isFinite)) continue
     times.push(t)
+    opens.push(o)
     closes.push(c)
     highs.push(h)
     lows.push(l)
     vols.push(Number.isFinite(v) ? v : 0)
+    const rawAmp = parseNumStr(r.amplitude)
+    amplitudes.push(Number.isFinite(rawAmp) ? rawAmp : (o > 0 ? (h - l) / o * 100 : NaN))
   }
-  return { times, closes, highs, lows, vols }
+  return { times, opens, closes, highs, lows, vols, amplitudes }
 }
 
-function smaValues(closes, period) {
-  const out = []
-  for (let i = 0; i < closes.length; i++) {
-    if (i < period - 1) {
-      out.push(null)
-      continue
-    }
-    let s = 0
-    for (let j = 0; j < period; j++) s += closes[i - j]
-    out.push(s / period)
+function avgAmplitude(amplitudes, period) {
+  if (!amplitudes || amplitudes.length < period) return NaN
+  let s = 0, cnt = 0
+  for (let i = amplitudes.length - period; i < amplitudes.length; i++) {
+    const v = amplitudes[i]
+    if (Number.isFinite(v)) { s += v; cnt++ }
   }
-  return out
+  return cnt === period ? s / cnt : NaN
 }
 
-function bollingerBands(closes, period, mult) {
-  const mid = smaValues(closes, period)
-  const upper = []
-  const lower = []
-  for (let i = 0; i < closes.length; i++) {
-    if (i < period - 1) {
-      upper.push(null)
-      lower.push(null)
-      continue
-    }
-    const m = mid[i]
-    let sumSq = 0
-    for (let j = 0; j < period; j++) {
-      const d = closes[i - j] - m
-      sumSq += d * d
-    }
-    const std = Math.sqrt(sumSq / period)
-    upper.push(m + mult * std)
-    lower.push(m - mult * std)
-  }
-  return { upper, mid, lower }
-}
-
-function obvValues(closes, vols) {
-  if (!closes.length) return []
-  const out = []
-  let obv = vols[0] || 0
-  out.push(obv)
-  for (let i = 1; i < closes.length; i++) {
-    const ch = closes[i] - closes[i - 1]
-    if (ch > 0) obv += vols[i] || 0
-    else if (ch < 0) obv -= vols[i] || 0
-    out.push(obv)
-  }
-  return out
+function formatVolumeRatio(v) {
+  if (v == null || v === '' || v === '--') return '--'
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toFixed(2) : '--'
 }
 
 function toLineData(times, values) {
@@ -255,123 +345,7 @@ function toLineData(times, values) {
 }
 
 /** 单根 K 的近似「成本中枢」：优先日 VWAP（成交额/量），否则典型价，夹在 [L,H] */
-function chipBarCostCenter(r) {
-  const h = Number(r.high)
-  const l = Number(r.low)
-  const c = Number(r.close)
-  const o = Number(r.open)
-  const vol = Number(r.volume)
-  const amt = Number(r.amount)
-  const hlOk = Number.isFinite(h) && Number.isFinite(l) && h > 0 && l > 0 && h >= l
-  if (!hlOk) return null
-  if (Number.isFinite(amt) && amt > 0 && Number.isFinite(vol) && vol > 0) {
-    const vwap = amt / vol
-    if (Number.isFinite(vwap) && vwap > 0) return Math.min(h, Math.max(l, vwap))
-  }
-  if ([h, l, c].every(Number.isFinite) && c > 0) {
-    const tp = (h + l + c) / 3
-    if (Number.isFinite(tp)) return Math.min(h, Math.max(l, tp))
-  }
-  if ([h, l, o, c].every(Number.isFinite) && o > 0 && c > 0) {
-    const tp = (h + l + o + c) / 4
-    if (Number.isFinite(tp)) return Math.min(h, Math.max(l, tp))
-  }
-  return (h + l) / 2
-}
-
-/**
- * 将成交量按高斯核落在 [low,high] 与各 bin 的交集上（核中心为成本中枢），
- * 比均匀铺满当日高低区间更接近「筹码集中在成交密集价」的经验事实。
- */
-function addChipVolumeKernel(dist, bins, minP, width, low, high, vol, center) {
-  if (vol <= 0 || low <= 0 || high <= 0) return
-  let lo = low
-  let hi = high
-  if (hi < lo) [lo, hi] = [hi, lo]
-  const span = hi - lo
-  const loIdx = Math.max(0, Math.min(bins - 1, Math.floor((lo - minP) / width)))
-  const hiIdx = Math.max(0, Math.min(bins - 1, Math.floor((hi - minP) / width)))
-  if (hiIdx < loIdx) return
-  if (span < 1e-9 * Math.max(1, hi)) {
-    const i = Math.max(0, Math.min(bins - 1, Math.floor(((lo + hi) / 2 - minP) / width)))
-    dist[i] += vol
-    return
-  }
-  let m = center
-  if (!Number.isFinite(m)) m = (lo + hi) / 2
-  m = Math.min(hi, Math.max(lo, m))
-  const sigma = Math.max(span * 0.18, hi * 1e-6, 1e-6)
-  let wsum = 0
-  for (let i = loIdx; i <= hiIdx; i++) {
-    const bc = minP + (i + 0.5) * width
-    if (bc < lo || bc > hi) continue
-    const d = (bc - m) / sigma
-    wsum += Math.exp(-0.5 * d * d)
-  }
-  if (wsum <= 0) {
-    const cnt = hiIdx - loIdx + 1
-    const add = vol / cnt
-    for (let i = loIdx; i <= hiIdx; i++) dist[i] += add
-    return
-  }
-  for (let i = loIdx; i <= hiIdx; i++) {
-    const bc = minP + (i + 0.5) * width
-    if (bc < lo || bc > hi) continue
-    const d = (bc - m) / sigma
-    const w = Math.exp(-0.5 * d * d)
-    dist[i] += (vol * w) / wsum
-  }
-}
-
-function calcChipDistribution(rows, bins) {
-  if (!rows?.length || bins <= 0) return { items: [], avgCost: 0, profitRatio: 0, current: 0 }
-  let minP = Infinity, maxP = 0
-  for (const r of rows) {
-    const lo = Number(r.low) || 0
-    const hi = Number(r.high) || 0
-    if (lo > 0 && lo < minP) minP = lo
-    if (hi > 0 && hi > maxP) maxP = hi
-  }
-  if (minP <= 0 || maxP <= 0 || maxP < minP) return { items: [], avgCost: 0, profitRatio: 0, current: 0 }
-  if (maxP === minP) maxP = minP * 1.001
-  const width = (maxP - minP) / bins
-  if (width <= 0) return { items: [], avgCost: 0, profitRatio: 0, current: 0 }
-  const dist = new Float64Array(bins)
-  for (const r of rows) {
-    let turn = parseFloatPct(r.turnoverRate)
-    if (turn < 0) turn = 0
-    if (turn > 0.98) turn = 0.98
-    const remain = 1.0 - turn
-    for (let i = 0; i < bins; i++) dist[i] *= remain
-    const low = Number(r.low) || 0
-    const high = Number(r.high) || 0
-    const vol = Number(r.volume) || 0
-    if (vol <= 0 || low <= 0 || high <= 0) continue
-    const center = chipBarCostCenter(r)
-    addChipVolumeKernel(dist, bins, minP, width, low, high, vol, center)
-  }
-  let sum = 0
-  for (let i = 0; i < bins; i++) sum += dist[i]
-  const cur = Number(rows[rows.length - 1].close) || Number(rows[rows.length - 1].high) || 0
-  const items = []
-  let avgCost = 0, profitVol = 0
-  for (let i = 0; i < bins; i++) {
-    const center = minP + (i + 0.5) * width
-    const v = dist[i]
-    const ratio = sum > 0 ? v / sum : 0
-    items.push({ price: Math.round(center * 10000) / 10000, vol: Math.round(v * 10000) / 10000, ratio: Math.round(ratio * 1e6) / 1e6 })
-    avgCost += v * center
-    if (center <= cur) profitVol += v
-  }
-  if (sum > 0) avgCost /= sum
-  const profitRatio = sum > 0 ? profitVol / sum : 0
-  return { items, avgCost: Math.round(avgCost * 10000) / 10000, profitRatio: Math.round(profitRatio * 1e6) / 1e6, current: Math.round(cur * 10000) / 10000, minPrice: minP, maxPrice: maxP }
-}
-
-function parseFloatPct(s) {
-  const v = parseFloat(String(s ?? '').replace(/%/g, '').trim())
-  return Number.isFinite(v) ? v / 100 : 0
-}
+import { chipBarCostCenter, addChipVolumeKernel, calcChipDistribution } from './kline/chip'
 
 function drawChipCanvas() {
   const canvas = chipCanvasRef.value
@@ -423,136 +397,6 @@ function drawChipCanvas() {
   }
 }
 
-function emaFinite(values, period) {
-  const out = []
-  const k = 2 / (period + 1)
-  let ema = null
-  for (let i = 0; i < values.length; i++) {
-    const v = values[i]
-    if (!Number.isFinite(v)) {
-      out.push(null)
-      continue
-    }
-    if (ema === null) {
-      if (i < period - 1) {
-        out.push(null)
-        continue
-      }
-      let s = 0
-      let ok = true
-      for (let j = i - period + 1; j <= i; j++) {
-        if (!Number.isFinite(values[j])) {
-          ok = false
-          break
-        }
-        s += values[j]
-      }
-      if (!ok) {
-        out.push(null)
-        continue
-      }
-      ema = s / period
-      out.push(ema)
-    } else {
-      ema = v * k + ema * (1 - k)
-      out.push(ema)
-    }
-  }
-  return out
-}
-
-/** DIF 序列前段为 null，从首个有效值起做 EMA（用于 MACD 信号线） */
-function emaLeadingNull(series, period) {
-  const out = series.map(() => null)
-  const k = 2 / (period + 1)
-  let ema = null
-  let sum = 0
-  let cnt = 0
-  for (let i = 0; i < series.length; i++) {
-    const v = series[i]
-    if (v == null || !Number.isFinite(v)) {
-      out[i] = null
-      continue
-    }
-    if (ema === null) {
-      sum += v
-      cnt++
-      if (cnt < period) {
-        out[i] = null
-        continue
-      }
-      if (cnt === period) {
-        ema = sum / period
-        out[i] = ema
-      }
-    } else {
-      ema = v * k + ema * (1 - k)
-      out[i] = ema
-    }
-  }
-  return out
-}
-
-function macdBundle(closes) {
-  const ema12 = emaFinite(closes, 12)
-  const ema26 = emaFinite(closes, 26)
-  const dif = closes.map((_, i) =>
-    ema12[i] != null && ema26[i] != null ? ema12[i] - ema26[i] : null,
-  )
-  const dea = emaLeadingNull(dif, 9)
-  const hist = dif.map((d, i) =>
-    d != null && dea[i] != null ? 2 * (d - dea[i]) : null,
-  )
-  return { dif, dea, hist }
-}
-
-function kdjBundle(highs, lows, closes, n = 9) {
-  const len = closes.length
-  const rsv = new Array(len).fill(null)
-  for (let i = n - 1; i < len; i++) {
-    let hn = -Infinity
-    let ln = Infinity
-    for (let j = 0; j < n; j++) {
-      hn = Math.max(hn, highs[i - j])
-      ln = Math.min(ln, lows[i - j])
-    }
-    const c = closes[i]
-    rsv[i] = hn === ln ? 50 : ((c - ln) / (hn - ln)) * 100
-  }
-  const K = new Array(len).fill(null)
-  const D = new Array(len).fill(null)
-  const J = new Array(len).fill(null)
-  let pk = 50
-  let pd = 50
-  for (let i = 0; i < len; i++) {
-    const r = rsv[i]
-    if (r == null) continue
-    pk = (2 * pk + r) / 3
-    pd = (2 * pd + pk) / 3
-    K[i] = pk
-    D[i] = pd
-    J[i] = 3 * pk - 2 * pd
-  }
-  return { K, D, J }
-}
-
-function rsiBundle(closes, period = 14) {
-  const out = new Array(closes.length).fill(null)
-  for (let i = period; i < closes.length; i++) {
-    let gain = 0
-    let loss = 0
-    for (let j = 0; j < period; j++) {
-      const ch = closes[i - j] - closes[i - j - 1]
-      if (ch >= 0) gain += ch
-      else loss -= ch
-    }
-    const ag = gain / period
-    const al = loss / period
-    out[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al)
-  }
-  return out
-}
-
 function tearDownAllSubPanes() {
   if (!chart) return
   ind.obv = removeSeriesSafe(ind.obv)
@@ -563,6 +407,43 @@ function tearDownAllSubPanes() {
   ind.kdjD = removeSeriesSafe(ind.kdjD)
   ind.kdjJ = removeSeriesSafe(ind.kdjJ)
   ind.rsi = removeSeriesSafe(ind.rsi)
+  ind.atr = removeSeriesSafe(ind.atr)
+  ind.mfi = removeSeriesSafe(ind.mfi)
+  ind.cci = removeSeriesSafe(ind.cci)
+  ind.ttmHist = removeSeriesSafe(ind.ttmHist)
+  ind.ttmDots = removeSeriesSafe(ind.ttmDots)
+  ind.adx = removeSeriesSafe(ind.adx)
+  ind.adxDiP = removeSeriesSafe(ind.adxDiP)
+  ind.adxDiM = removeSeriesSafe(ind.adxDiM)
+  ind.williamsR = removeSeriesSafe(ind.williamsR)
+  ind.stochRsi = removeSeriesSafe(ind.stochRsi)
+  ind.stochRsiD = removeSeriesSafe(ind.stochRsiD)
+  ind.cmf = removeSeriesSafe(ind.cmf)
+  ind.aroonUp = removeSeriesSafe(ind.aroonUp)
+  ind.aroonDown = removeSeriesSafe(ind.aroonDown)
+  ind.cmo = removeSeriesSafe(ind.cmo)
+  ind.forceIndex = removeSeriesSafe(ind.forceIndex)
+  ind.avgAmp5 = removeSeriesSafe(ind.avgAmp5)
+  ind.avgAmp10 = removeSeriesSafe(ind.avgAmp10)
+  ind.avgAmp20 = removeSeriesSafe(ind.avgAmp20)
+  ind.aoHist = removeSeriesSafe(ind.aoHist)
+  ind.aoLine = removeSeriesSafe(ind.aoLine)
+  ind.adLine = removeSeriesSafe(ind.adLine)
+  ind.trixLine = removeSeriesSafe(ind.trixLine)
+  ind.trixSignal = removeSeriesSafe(ind.trixSignal)
+  ind.rocLine = removeSeriesSafe(ind.rocLine)
+  ind.chopLine = removeSeriesSafe(ind.chopLine)
+  ind.elderBull = removeSeriesSafe(ind.elderBull)
+  ind.elderBear = removeSeriesSafe(ind.elderBear)
+  ind.chaikinOscLine = removeSeriesSafe(ind.chaikinOscLine)
+  ind.massIndexLine = removeSeriesSafe(ind.massIndexLine)
+  ind.ulcerLine = removeSeriesSafe(ind.ulcerLine)
+  ind.coppockLine = removeSeriesSafe(ind.coppockLine)
+  ind.smiLine = removeSeriesSafe(ind.smiLine)
+  ind.smiSignal = removeSeriesSafe(ind.smiSignal)
+  ind.signalRatioBullish = removeSeriesSafe(ind.signalRatioBullish)
+  ind.signalRatioBearish = removeSeriesSafe(ind.signalRatioBearish)
+  ind.signalRatioNet = removeSeriesSafe(ind.signalRatioNet)
   while (chart.panes().length > 1) {
     chart.removePane(chart.panes().length - 1)
   }
@@ -584,9 +465,33 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
   if (showMACD.value) subs.push('macd')
   if (showKDJ.value) subs.push('kdj')
   if (showRSI.value) subs.push('rsi')
+  if (showATR.value) subs.push('atr')
+  if (showMFI.value) subs.push('mfi')
+  if (showCCI.value) subs.push('cci')
+  if (showTTMSqueeze.value) subs.push('ttmSqueeze')
+  if (showADX.value) subs.push('adx')
+  if (showWilliamsR.value) subs.push('williamsR')
+  if (showStochRSI.value) subs.push('stochRsi')
+  if (showCMF.value) subs.push('cmf')
+  if (showAroon.value) subs.push('aroon')
+  if (showCMO.value) subs.push('cmo')
+  if (showForceIndex.value) subs.push('forceIndex')
+  if (showAvgAmp.value) subs.push('avgAmp')
+  if (showAO.value) subs.push('ao')
+  if (showAD.value) subs.push('ad')
+  if (showTRIX.value) subs.push('trix')
+  if (showROC.value) subs.push('roc')
+  if (showCHOP.value) subs.push('chop')
+  if (showElderRay.value) subs.push('elderRay')
+  if (showChaikinOsc.value) subs.push('chaikinOsc')
+  if (showMassIndex.value) subs.push('massIndex')
+  if (showUlcerIndex.value) subs.push('ulcerIndex')
+  if (showCoppock.value) subs.push('coppock')
+  if (showSMI.value) subs.push('smi')
+  if (showSignalRatio.value) subs.push('signalRatio')
   if (subs.length === 0) return
 
-  chart.panes()[0]?.setStretchFactor(8 + subs.length * 2)
+  chart.panes()[0]?.setStretchFactor(3)
 
   let paneIdx = 1
   for (const key of subs) {
@@ -684,6 +589,726 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
         paneIdx,
       )
       ind.rsi.setData(toLineData(times, rsi))
+    } else if (key === 'atr') {
+      const atr = atrValues(highs, lows, closes, 14)
+      ind.atr = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#06b6d4',
+          title: 'ATR14',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.atr.setData(toLineData(times, atr))
+    } else if (key === 'mfi') {
+      const mfi = mfiValues(highs, lows, closes, vols, 14)
+      ind.mfi = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#f97316',
+          title: 'MFI14',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.mfi.setData(toLineData(times, mfi))
+    } else if (key === 'cci') {
+      const cci = cciValues(highs, lows, closes, 20)
+      ind.cci = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#eab308',
+          title: 'CCI20',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.cci.setData(toLineData(times, cci))
+    } else if (key === 'ttmSqueeze') {
+      const { squeeze, momentum } = ttmSqueezeValues(highs, lows, closes)
+      ind.ttmHist = chart.addSeries(
+        HistogramSeries,
+        {
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.ttmDots = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#6366f1',
+          lineWidth: 0,
+          pointMarkersVisible: true,
+          pointMarkersRadius: 2,
+          title: 'SQZ',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      const histData = []
+      const dotData = []
+      for (let i = 0; i < times.length; i++) {
+        const mv = momentum[i]
+        if (mv != null && Number.isFinite(mv)) {
+          histData.push({
+            time: times[i],
+            value: mv,
+            color: mv >= 0
+              ? (squeeze[i] ? 'rgba(239, 83, 80, 0.7)' : 'rgba(239, 83, 80, 0.4)')
+              : (squeeze[i] ? 'rgba(38, 166, 154, 0.7)' : 'rgba(38, 166, 154, 0.4)'),
+          })
+          dotData.push({
+            time: times[i],
+            value: 0,
+            color: squeeze[i] ? '#eab308' : '#22c55e',
+          })
+        }
+      }
+      ind.ttmHist.setData(histData)
+      ind.ttmDots.setData(dotData)
+    } else if (key === 'adx') {
+      const { adx, diP, diM } = adxValues(highs, lows, closes, 14)
+      ind.adxDiP = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#22c55e',
+          lineWidth: 1,
+          title: '+DI',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.adxDiM = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#ef4444',
+          lineWidth: 1,
+          title: '-DI',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.adx = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#3b82f6',
+          lineWidth: 2,
+          title: 'ADX',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.adxDiP.setData(toLineData(times, diP))
+      ind.adxDiM.setData(toLineData(times, diM))
+      ind.adx.setData(toLineData(times, adx))
+    } else if (key === 'williamsR') {
+      const wr = williamsRValues(highs, lows, closes, 14)
+      ind.williamsR = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#8b5cf6',
+          title: 'W%R14',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.williamsR.setData(toLineData(times, wr))
+    } else if (key === 'stochRsi') {
+      const { k, d } = stochRsiValues(closes, 14, 14, 3, 3)
+      ind.stochRsi = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#06b6d4',
+          title: 'StochRSI K',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.stochRsiD = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#f59e0b',
+          title: 'StochRSI D',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.stochRsi.setData(toLineData(times, k))
+      ind.stochRsiD.setData(toLineData(times, d))
+    } else if (key === 'cmf') {
+      const cmf = cmfValues(highs, lows, closes, vols, 20)
+      ind.cmf = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#14b8a6',
+          title: 'CMF20',
+          priceFormat: { type: 'price', precision: 3, minMove: 0.001 },
+        },
+        paneIdx,
+      )
+      ind.cmf.setData(toLineData(times, cmf))
+    } else if (key === 'aroon') {
+      const { up, down } = aroonValues(highs, lows, 25)
+      ind.aroonUp = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#22c55e',
+          title: 'Aroon Up',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.aroonDown = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#ef4444',
+          title: 'Aroon Down',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.aroonUp.setData(toLineData(times, up))
+      ind.aroonDown.setData(toLineData(times, down))
+    } else if (key === 'cmo') {
+      const cmo = cmoValues(closes, 14)
+      ind.cmo = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#8b5cf6',
+          title: 'CMO14',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.cmo.setData(toLineData(times, cmo))
+    } else if (key === 'forceIndex') {
+      const fi = forceIndexValues(closes, vols, 13)
+      ind.forceIndex = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#f97316',
+          title: 'FI13',
+          priceFormat: { type: 'price', precision: 0, minMove: 1 },
+        },
+        paneIdx,
+      )
+      ind.forceIndex.setData(toLineData(times, fi))
+    } else if (key === 'avgAmp') {
+      const { amplitudes } = extractOHLCV(mergedRawRows)
+      const aa5 = smaValues(amplitudes, 5)
+      const aa10 = smaValues(amplitudes, 10)
+      const aa20 = smaValues(amplitudes, 20)
+      ind.avgAmp5 = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#f59e0b',
+          title: '均幅5',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.avgAmp10 = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#3b82f6',
+          title: '均幅10',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.avgAmp20 = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#a855f7',
+          title: '均幅20',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.avgAmp5.setData(toLineData(times, aa5))
+      ind.avgAmp10.setData(toLineData(times, aa10))
+      ind.avgAmp20.setData(toLineData(times, aa20))
+    } else if (key === 'ao') {
+      const ao = aoValues(highs, lows)
+      ind.aoHist = chart.addSeries(
+        HistogramSeries,
+        {
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.aoLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#3b82f6',
+          title: 'AO',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      const aoHistData = []
+      for (let i = 0; i < times.length; i++) {
+        const v = ao[i]
+        if (v != null && Number.isFinite(v)) {
+          aoHistData.push({
+            time: times[i],
+            value: v,
+            color: v >= 0
+              ? (i > 0 && ao[i - 1] != null && v > ao[i - 1] ? 'rgba(239, 83, 80, 0.7)' : 'rgba(239, 83, 80, 0.35)')
+              : (i > 0 && ao[i - 1] != null && v < ao[i - 1] ? 'rgba(38, 166, 154, 0.7)' : 'rgba(38, 166, 154, 0.35)'),
+          })
+        }
+      }
+      ind.aoHist.setData(aoHistData)
+      ind.aoLine.setData(toLineData(times, ao))
+    } else if (key === 'ad') {
+      const ad = adValues(highs, lows, closes, vols)
+      ind.adLine = chart.addSeries(
+        LineSeries,
+        {
+          color: '#22c55e',
+          lineWidth: 1,
+          title: 'A/D',
+          lastValueVisible: true,
+          priceLineVisible: false,
+          priceFormat: { type: 'price', precision: 0, minMove: 1 },
+        },
+        paneIdx,
+      )
+      ind.adLine.setData(toLineData(times, ad))
+    } else if (key === 'trix') {
+      const trix = trixValues(closes, 15)
+      const signal = emaLeadingNull(trix, 9)
+      ind.trixLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#3b82f6',
+          lineWidth: 2,
+          title: 'TRIX',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.trixSignal = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#ef4444',
+          title: 'Signal',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.trixLine.setData(toLineData(times, trix))
+      ind.trixSignal.setData(toLineData(times, signal))
+    } else if (key === 'roc') {
+      const roc = rocValues(closes, 12)
+      ind.rocLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#d946ef',
+          title: 'ROC12',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.rocLine.setData(toLineData(times, roc))
+    } else if (key === 'chop') {
+      const chop = chopValues(highs, lows, closes, 14)
+      ind.chopLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#f97316',
+          title: 'CHOP',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.chopLine.setData(toLineData(times, chop))
+    } else if (key === 'elderRay') {
+      const { bullPower, bearPower } = elderRayValues(highs, lows, closes, 13)
+      ind.elderBull = chart.addSeries(
+        HistogramSeries,
+        {
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.elderBear = chart.addSeries(
+        HistogramSeries,
+        {
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      const bullData = []
+      const bearData = []
+      for (let i = 0; i < times.length; i++) {
+        const bv = bullPower[i]
+        const brv = bearPower[i]
+        if (bv != null && Number.isFinite(bv)) {
+          bullData.push({
+            time: times[i],
+            value: bv,
+            color: bv >= 0 ? 'rgba(239, 68, 68, 0.7)' : 'rgba(239, 68, 68, 0.35)',
+          })
+        }
+        if (brv != null && Number.isFinite(brv)) {
+          bearData.push({
+            time: times[i],
+            value: brv,
+            color: brv >= 0 ? 'rgba(34, 197, 94, 0.7)' : 'rgba(34, 197, 94, 0.35)',
+          })
+        }
+      }
+      ind.elderBull.setData(bullData)
+      ind.elderBear.setData(bearData)
+    } else if (key === 'chaikinOsc') {
+      const co = chaikinOscValues(highs, lows, closes, vols, 3, 10)
+      ind.chaikinOscLine = chart.addSeries(
+        HistogramSeries,
+        {
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceFormat: { type: 'price', precision: 0, minMove: 1 },
+        },
+        paneIdx,
+      )
+      const coData = []
+      for (let i = 0; i < times.length; i++) {
+        const v = co[i]
+        if (v != null && Number.isFinite(v)) {
+          coData.push({
+            time: times[i],
+            value: v,
+            color: v >= 0 ? 'rgba(239, 68, 68, 0.7)' : 'rgba(34, 197, 94, 0.7)',
+          })
+        }
+      }
+      ind.chaikinOscLine.setData(coData)
+    } else if (key === 'massIndex') {
+      const mi = massIndexValues(highs, lows)
+      ind.massIndexLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#f59e0b',
+          title: 'Mass',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.massIndexLine.setData(toLineData(times, mi))
+    } else if (key === 'ulcerIndex') {
+      const ui = ulcerIndexValues(closes)
+      ind.ulcerLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#ef4444',
+          title: 'Ulcer',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.ulcerLine.setData(toLineData(times, ui))
+    } else if (key === 'coppock') {
+      const cp = coppockValues(closes)
+      ind.coppockLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#8b5cf6',
+          title: 'Coppock',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        },
+        paneIdx,
+      )
+      ind.coppockLine.setData(toLineData(times, cp))
+    } else if (key === 'smi') {
+      const { smi: smiData, signal: smiSig } = smiValues(highs, lows, closes)
+      ind.smiLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#3b82f6',
+          lineWidth: 2,
+          title: 'SMI',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.smiSignal = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#ef4444',
+          title: 'Signal',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.smiLine.setData(toLineData(times, smiData))
+      ind.smiSignal.setData(toLineData(times, smiSig))
+    } else if (key === 'signalRatio') {
+      // 逐根 K 线评估所有指标信号，计算看多/看空/中性/震荡比例
+      const bullishArr = new Array(times.length).fill(null)
+      const bearishArr = new Array(times.length).fill(null)
+      const netArr = new Array(times.length).fill(null)
+      // 预计算所有指标数组（只算一次）
+      const ma5 = smaValues(closes, 5)
+      const ma10 = smaValues(closes, 10)
+      const ma20 = smaValues(closes, 20)
+      const ma60 = smaValues(closes, 60)
+      const ema12 = emaFinite(closes, 12)
+      const ema21 = emaFinite(closes, 21)
+      const { upper: bollU, mid: bollM, lower: bollL } = bollingerBands(closes, 20, 2)
+      const vw = vwapValues(highs, lows, closes, vols, 20)
+      const dema21 = demaValues(closes, 21)
+      const tema21 = temaValues(closes, 21)
+      const kama10 = kamaValues(closes, 10, 2, 30)
+      const hull9 = hullMaValues(closes, 9)
+      const { upper: kU, mid: kM, lower: kL } = keltnerChannelValues(highs, lows, closes, 20, 10, 1.5)
+      const { supertrend: stVal, direction: stDir } = supertrendValues(highs, lows, closes, 10, 3)
+      const { tenkan: ichTen, kijun: ichKij, spanA: ichSA, senkouB: ichSB } = ichimokuValues(highs, lows, closes)
+      const { sar: sarVal, direction: sarDir } = sarValues(highs, lows, closes, 0.02, 0.2)
+      const { upper: dcU, mid: dcM, lower: dcL } = donchianChannelValues(highs, lows, 20)
+      const { jaw: agJ, teeth: agT, lips: agL } = alligatorValues(highs, lows, closes)
+      const { directions: zzDir } = zigzagValues(highs, lows, closes, 5)
+      const { direction: satsDir } = satsValues(highs, lows, closes, vols)
+      const { pp: pivPP, s1: pivS1, r1: pivR1 } = pivotPointsValues(highs, lows, closes)
+      const { vwap: vbM, upper: vbU, lower: vbL } = vwapBandsValues(highs, lows, closes, vols)
+      const { dif: macdDif, dea: macdDea, hist: macdHist } = macdBundle(closes)
+      const rsi14 = rsiBundle(closes, 14)
+      const { K: kdjK, D: kdjD, J: kdjJ } = kdjBundle(highs, lows, closes, 9)
+      const cci20 = cciValues(highs, lows, closes, 20)
+      const wr14 = williamsRValues(highs, lows, closes, 14)
+      const { k: stochK, d: stochD } = stochRsiValues(closes, 14, 14, 3, 3)
+      const { adx: adxVal, diP: adxP, diM: adxM } = adxValues(highs, lows, closes, 14)
+      const { up: arUp, down: arDown } = aroonValues(highs, lows, 25)
+      const cmo14 = cmoValues(closes, 14)
+      const trix15 = trixValues(closes, 15)
+      const trixSig = emaLeadingNull(trix15, 9)
+      const roc12 = rocValues(closes, 12)
+      const coppock = coppockValues(closes)
+      const { smi: smiD, signal: smiS } = smiValues(highs, lows, closes)
+      const ao534 = aoValues(highs, lows)
+      const obv = obvValues(closes, vols)
+      const mfi14 = mfiValues(highs, lows, closes, vols, 14)
+      const cmf20 = cmfValues(highs, lows, closes, vols, 20)
+      const adLine = adValues(highs, lows, closes, vols)
+      const fi13 = forceIndexValues(closes, vols, 13)
+      const co310 = chaikinOscValues(highs, lows, closes, vols, 3, 10)
+      const atr14 = atrValues(highs, lows, closes, 14)
+      const chop14 = chopValues(highs, lows, closes, 14)
+      const miVal = massIndexValues(highs, lows)
+      const uiVal = ulcerIndexValues(closes)
+      const { squeeze: ttmSq, momentum: ttmMo } = ttmSqueezeValues(highs, lows, closes)
+      const { bullPower: erBull, bearPower: erBear } = elderRayValues(highs, lows, closes, 13)
+      // 辅助：读取数组在 i 位置的值
+      const v = (arr, i) => (i >= 0 && i < arr.length && arr[i] != null && Number.isFinite(arr[i])) ? arr[i] : null
+      const vPrev = (arr, i) => v(arr, i - 1)
+      // 构建ZigZag方向缓存（找最近非零方向）
+      const zzLastDir = new Array(times.length).fill(0)
+      let lastNonZero = 0
+      for (let i = 0; i < zzDir.length; i++) {
+        if (zzDir[i] === 1 || zzDir[i] === -1) lastNonZero = zzDir[i]
+        zzLastDir[i] = lastNonZero
+      }
+      // 逐根K线评估
+      for (let i = 0; i < times.length; i++) {
+        const c = closes[i]
+        if (c == null || !Number.isFinite(c)) continue
+        let bull = 0, bear = 0, neut = 0, osci = 0, cnt = 0
+        // MA
+        { const a5=v(ma5,i),a10=v(ma10,i),a20=v(ma20,i),a60=v(ma60,i)
+          if(a5!=null&&a10!=null&&a20!=null&&a60!=null){cnt++;if(a5>a10&&a10>a20&&a20>a60)bull++;else if(a5<a10&&a10<a20&&a20<a60)bear++;else if((a5>a20&&a10<a60)||(a5<a20&&a10>a60))osci++;else neut++;} }
+        // EMA
+        { const e12=v(ema12,i),e21=v(ema21,i)
+          if(e12!=null&&e21!=null){cnt++;if(e12>e21)bull++;else if(e12<e21)bear++;else neut++;} }
+        // BOLL
+        { const bu=v(bollU,i),bm=v(bollM,i),bl=v(bollL,i)
+          if(bu!=null&&bm!=null&&bl!=null){cnt++;if(c>bu)bull++;else if(c<bl)bear++;else if(c>bm)osci++;else neut++;} }
+        // VWAP
+        { const vwv=v(vw,i);if(vwv!=null){cnt++;if(c>vwv)bull++;else if(c<vwv)bear++;else neut++;} }
+        // DEMA
+        { const dv=v(dema21,i);if(dv!=null){cnt++;if(c>dv)bull++;else if(c<dv)bear++;else neut++;} }
+        // TEMA
+        { const tv=v(tema21,i);if(tv!=null){cnt++;if(c>tv)bull++;else if(c<tv)bear++;else neut++;} }
+        // KAMA
+        { const kv=v(kama10,i),kp=vPrev(kama10,i)
+          if(kv!=null&&kp!=null){cnt++;if(c>kv&&kv>kp)bull++;else if(c<kv&&kv<kp)bear++;else neut++;} }
+        // HullMA
+        { const hv=v(hull9,i),hp=vPrev(hull9,i)
+          if(hv!=null&&hp!=null){cnt++;if(hv>hp)bull++;else if(hv<hp)bear++;else neut++;} }
+        // Keltner
+        { const ku=v(kU,i),kl=v(kL,i)
+          if(ku!=null&&kl!=null){cnt++;if(c>ku)bull++;else if(c<kl)bear++;else osci++;} }
+        // SuperTrend
+        { const sd=v(stDir,i);if(sd!=null){cnt++;if(sd===1)bull++;else if(sd===-1)bear++;else neut++;} }
+        // Ichimoku
+        { const it=v(ichTen,i),ik=v(ichKij,i),isa=v(ichSA,i),isb=v(ichSB,i)
+          if(it!=null&&ik!=null&&isa!=null&&isb!=null){const ct=Math.max(isa,isb),cb=Math.min(isa,isb);cnt++;if(c>ct&&it>ik)bull++;else if(c<cb&&it<ik)bear++;else if(c>=cb&&c<=ct)osci++;else neut++;} }
+        // SAR
+        { const sd=v(sarDir,i);if(sd!=null){cnt++;if(sd===1)bull++;else if(sd===-1)bear++;else neut++;} }
+        // Donchian
+        { const du=v(dcU,i),dl=v(dcL,i)
+          if(du!=null&&dl!=null){cnt++;if(c>=du)bull++;else if(c<=dl)bear++;else osci++;} }
+        // Alligator
+        { const aj=v(agJ,i),at=v(agT,i),al=v(agL,i)
+          if(aj!=null&&at!=null&&al!=null){cnt++;if(al>at&&at>aj)bull++;else if(al<at&&at<aj)bear++;else osci++;} }
+        // ZigZag
+        { const zd=zzLastDir[i];if(zd!==0){cnt++;if(zd===-1)bull++;else if(zd===1)bear++;else neut++;} }
+        // SATS
+        { const sd=v(satsDir,i);if(sd!=null){cnt++;if(sd===1)bull++;else if(sd===-1)bear++;else neut++;} }
+        // Pivot
+        { const pp=v(pivPP,i),s1=v(pivS1,i),r1=v(pivR1,i)
+          if(pp!=null&&r1!=null&&s1!=null){cnt++;if(c>r1)bull++;else if(c<s1)bear++;else if(c>pp)osci++;else neut++;} }
+        // VWAPBands
+        { const vu=v(vbU,i),vl=v(vbL,i)
+          if(vu!=null&&vl!=null){cnt++;if(c>vu)bull++;else if(c<vl)bear++;else osci++;} }
+        // MACD
+        { const md=v(macdDif,i),me=v(macdDea,i),mh=v(macdHist,i)
+          if(md!=null&&me!=null&&mh!=null){cnt++;if(md>me&&mh>0)bull++;else if(md<me&&mh<0)bear++;else if((md>0&&mh<0)||(md<0&&mh>0))osci++;else neut++;} }
+        // RSI
+        { const rv=v(rsi14,i);if(rv!=null){cnt++;if(rv>70)osci++;else if(rv<30)osci++;else if(rv>50)bull++;else bear++;} }
+        // KDJ
+        { const kk=v(kdjK,i),kd=v(kdjD,i),kj=v(kdjJ,i)
+          if(kk!=null&&kd!=null&&kj!=null){cnt++;if(kj>kk&&kk>kd&&kk<80)bull++;else if(kj<kk&&kk<kd&&kk>20)bear++;else if(kk>80)bear++;else if(kk<20)bull++;else osci++;} }
+        // CCI
+        { const cv=v(cci20,i);if(cv!=null){cnt++;if(cv>100)bull++;else if(cv<-100)bear++;else osci++;} }
+        // W%R
+        { const wv=v(wr14,i);if(wv!=null){cnt++;if(wv<-80)bull++;else if(wv>-20)bear++;else osci++;} }
+        // StochRSI
+        { const sk=v(stochK,i),sd2=v(stochD,i)
+          if(sk!=null&&sd2!=null){cnt++;if(sk<20&&sd2<20&&sk>sd2)bull++;else if(sk>80&&sd2>80&&sk<sd2)bear++;else osci++;} }
+        // ADX
+        { const av=v(adxVal,i),ap=v(adxP,i),am=v(adxM,i)
+          if(av!=null&&ap!=null&&am!=null){cnt++;if(av>25&&ap>am)bull++;else if(av>25&&ap<am)bear++;else osci++;} }
+        // Aroon
+        { const au=v(arUp,i),ad2=v(arDown,i)
+          if(au!=null&&ad2!=null){cnt++;if(au>70&&ad2<30)bull++;else if(ad2>70&&au<30)bear++;else osci++;} }
+        // CMO
+        { const cv=cmo14[i];if(cv!=null&&Number.isFinite(cv)){cnt++;if(cv>50)bull++;else if(cv<-50)bear++;else osci++;} }
+        // TRIX
+        { const tv=v(trix15,i),ts=v(trixSig,i)
+          if(tv!=null&&ts!=null){cnt++;if(tv>ts)bull++;else if(tv<ts)bear++;else neut++;} }
+        // ROC
+        { const rv=v(roc12,i);if(rv!=null){cnt++;if(rv>0)bull++;else if(rv<0)bear++;else neut++;} }
+        // Coppock
+        { const cv=v(coppock,i),cp=vPrev(coppock,i)
+          if(cv!=null&&cp!=null){cnt++;if(cv>0&&cp<=0)bull++;else if(cv<0)bear++;else neut++;} }
+        // SMI
+        { const sv=v(smiD,i),ss=v(smiS,i)
+          if(sv!=null&&ss!=null){cnt++;if(sv>ss&&sv>0)bull++;else if(sv<ss&&sv<0)bear++;else osci++;} }
+        // AO
+        { const av2=v(ao534,i),ap2=vPrev(ao534,i)
+          if(av2!=null&&ap2!=null){cnt++;if(av2>0&&av2>ap2)bull++;else if(av2<0&&av2<ap2)bear++;else if(av2>0&&av2<ap2)osci++;else neut++;} }
+        // OBV
+        { const ov=v(obv,i),op=vPrev(obv,i)
+          if(ov!=null&&op!=null){cnt++;if(ov>op)bull++;else if(ov<op)bear++;else neut++;} }
+        // MFI
+        { const mv=v(mfi14,i);if(mv!=null){cnt++;if(mv>80)osci++;else if(mv<20)osci++;else if(mv>50)bull++;else bear++;} }
+        // CMF
+        { const cv=v(cmf20,i);if(cv!=null){cnt++;if(cv>0.05)bull++;else if(cv<-0.05)bear++;else osci++;} }
+        // A/D
+        { const av3=v(adLine,i),ap3=vPrev(adLine,i)
+          if(av3!=null&&ap3!=null){cnt++;if(av3>ap3)bull++;else if(av3<ap3)bear++;else neut++;} }
+        // FI
+        { const fv=v(fi13,i);if(fv!=null){cnt++;if(fv>0)bull++;else if(fv<0)bear++;else neut++;} }
+        // ChaikinOsc
+        { const cv=v(co310,i),cp=vPrev(co310,i)
+          if(cv!=null&&cp!=null){cnt++;if(cv>0&&cv>cp)bull++;else if(cv<0&&cv<cp)bear++;else osci++;} }
+        // ATR
+        { const av4=v(atr14,i),ap4=vPrev(atr14,i)
+          if(av4!=null&&ap4!=null){cnt++;if(av4>ap4)osci++;else neut++;} }
+        // CHOP
+        { const cv2=v(chop14,i);if(cv2!=null){cnt++;if(cv2>61.8)osci++;else neut++;} }
+        // MassIndex
+        { const mv2=v(miVal,i),mp=vPrev(miVal,i)
+          if(mv2!=null&&mp!=null){cnt++;if(mp>27&&mv2<27)bull++;else neut++;} }
+        // UlcerIndex
+        { const uv=v(uiVal,i);if(uv!=null){cnt++;if(uv<5)bull++;else if(uv>15)bear++;else neut++;} }
+        // TTM
+        { const sq=v(ttmSq,i),mo=v(ttmMo,i)
+          if(sq!=null&&mo!=null){cnt++;if(!sq&&mo>0)bull++;else if(!sq&&mo<0)bear++;else if(sq)osci++;else neut++;} }
+        // ElderRay
+        { const bp=v(erBull,i),brp=v(erBear,i)
+          if(bp!=null&&brp!=null){cnt++;if(bp>0&&bp>brp)bull++;else if(brp<0&&brp<bp)bear++;else osci++;} }
+        // 汇总
+        if (cnt > 0) {
+          bullishArr[i] = (bull / cnt) * 100
+          bearishArr[i] = (bear / cnt) * 100
+          netArr[i] = ((bull - bear) / cnt) * 100
+        }
+      }
+      ind.signalRatioBullish = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: 'rgba(239, 68, 68, 0.7)',
+          lineWidth: 1,
+          title: '看多%',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.signalRatioBearish = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: 'rgba(34, 197, 94, 0.7)',
+          lineWidth: 1,
+          title: '看空%',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.signalRatioNet = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#f59e0b',
+          lineWidth: 2,
+          title: '净信号',
+          priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+        },
+        paneIdx,
+      )
+      ind.signalRatioBullish.setData(toLineData(times, bullishArr))
+      ind.signalRatioBearish.setData(toLineData(times, bearishArr))
+      ind.signalRatioNet.setData(toLineData(times, netArr))
     }
     paneIdx++
   }
@@ -696,7 +1321,7 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
 function syncIndicators() {
   if (!chart || !candleSeries) return
 
-  const { times, closes, highs, lows, vols } = extractOHLCV(mergedRawRows)
+  const { times, opens, closes, highs, lows, vols } = extractOHLCV(mergedRawRows)
   if (!times.length) {
     ind.ma5 = removeSeriesSafe(ind.ma5)
     ind.ma10 = removeSeriesSafe(ind.ma10)
@@ -705,6 +1330,58 @@ function syncIndicators() {
     ind.bollU = removeSeriesSafe(ind.bollU)
     ind.bollM = removeSeriesSafe(ind.bollM)
     ind.bollL = removeSeriesSafe(ind.bollL)
+    ind.vwap = removeSeriesSafe(ind.vwap)
+    ind.kama = removeSeriesSafe(ind.kama)
+    ind.keltnerU = removeSeriesSafe(ind.keltnerU)
+    ind.keltnerM = removeSeriesSafe(ind.keltnerM)
+    ind.keltnerL = removeSeriesSafe(ind.keltnerL)
+    ind.supertrend = removeSeriesSafe(ind.supertrend)
+    ind.ema12 = removeSeriesSafe(ind.ema12)
+    ind.ema21 = removeSeriesSafe(ind.ema21)
+    ind.ichTenkan = removeSeriesSafe(ind.ichTenkan)
+    ind.ichKijun = removeSeriesSafe(ind.ichKijun)
+    ind.ichSpanA = removeSeriesSafe(ind.ichSpanA)
+    ind.ichSpanB = removeSeriesSafe(ind.ichSpanB)
+    ind.ichChikou = removeSeriesSafe(ind.ichChikou)
+    ind.supertrend = removeSeriesSafe(ind.supertrend)
+    ind.ema12 = removeSeriesSafe(ind.ema12)
+    ind.ema21 = removeSeriesSafe(ind.ema21)
+    ind.sar = removeSeriesSafe(ind.sar)
+    ind.donchianU = removeSeriesSafe(ind.donchianU)
+    ind.donchianM = removeSeriesSafe(ind.donchianM)
+    ind.donchianL = removeSeriesSafe(ind.donchianL)
+    ind.pivotPP = removeSeriesSafe(ind.pivotPP)
+    ind.pivotS1 = removeSeriesSafe(ind.pivotS1)
+    ind.pivotS2 = removeSeriesSafe(ind.pivotS2)
+    ind.pivotR1 = removeSeriesSafe(ind.pivotR1)
+    ind.pivotR2 = removeSeriesSafe(ind.pivotR2)
+    ind.dema = removeSeriesSafe(ind.dema)
+    ind.zigzag = removeSeriesSafe(ind.zigzag)
+    ind.satsLine = removeSeriesSafe(ind.satsLine)
+    ind.satsUpper = removeSeriesSafe(ind.satsUpper)
+    ind.satsLower = removeSeriesSafe(ind.satsLower)
+    ind.alligatorJaw = removeSeriesSafe(ind.alligatorJaw)
+    ind.alligatorTeeth = removeSeriesSafe(ind.alligatorTeeth)
+    ind.alligatorLips = removeSeriesSafe(ind.alligatorLips)
+    ind.hullMA = removeSeriesSafe(ind.hullMA)
+    ind.fractalHigh = removeSeriesSafe(ind.fractalHigh)
+    ind.fractalLow = removeSeriesSafe(ind.fractalLow)
+    ind.vwapBandsU = removeSeriesSafe(ind.vwapBandsU)
+    ind.vwapBandsM = removeSeriesSafe(ind.vwapBandsM)
+    ind.vwapBandsL = removeSeriesSafe(ind.vwapBandsL)
+    ind.temaLine = removeSeriesSafe(ind.temaLine)
+    ind.smcSwingHigh = removeSeriesSafe(ind.smcSwingHigh)
+    ind.smcSwingLow = removeSeriesSafe(ind.smcSwingLow)
+    ind.smcIntHigh = removeSeriesSafe(ind.smcIntHigh)
+    ind.smcIntLow = removeSeriesSafe(ind.smcIntLow)
+    ind.smcBos = removeSeriesSafe(ind.smcBos)
+    ind.smcChoch = removeSeriesSafe(ind.smcChoch)
+    ind.smcSwBos = removeSeriesSafe(ind.smcSwBos)
+    ind.smcSwChoch = removeSeriesSafe(ind.smcSwChoch)
+    ind.smcFvgTop = removeSeriesSafe(ind.smcFvgTop)
+    ind.smcFvgBot = removeSeriesSafe(ind.smcFvgBot)
+    ind.smcObTop = removeSeriesSafe(ind.smcObTop)
+    ind.smcObBot = removeSeriesSafe(ind.smcObBot)
     tearDownAllSubPanes()
     return
   }
@@ -801,95 +1478,561 @@ function syncIndicators() {
     ind.bollL = removeSeriesSafe(ind.bollL)
   }
 
-  syncSubPaneIndicators(times, closes, highs, lows, vols)
-}
-
-/**
- * 东方财富 K 线时间按中国内地交易所视为北京时间（无 Z 后缀时补 +08:00）。
- * 纯日期 YYYY-MM-DD 返回 null，由调用方用字符串传给图表。
- */
-function eastMoneyDayToUnixSeconds(dayStr) {
-  const t = String(dayStr || '').trim().replace(/\//g, '-')
-  if (!t || /^\d{4}-\d{2}-\d{2}$/.test(t)) return null
-  let iso = t
-  if (!t.includes('T')) {
-    iso = t.replace(/^(\d{4}-\d{2}-\d{2})\s+/, '$1T')
-  }
-  if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso)) {
-    iso += '+08:00'
-  }
-  const ms = Date.parse(iso)
-  if (!Number.isFinite(ms)) return null
-  return Math.floor(ms / 1000)
-}
-
-/** 东财 f51 常见形态：带时间的字符串、纯日期、14 位 YYYYMMDDHHmmss（用于分页 end） */
-function eastMoneyKlineFieldToUnixSeconds(s) {
-  let sec = eastMoneyDayToUnixSeconds(s)
-  if (sec != null) return sec
-  const t = String(s || '').trim().replace(/\//g, '-')
-  const dm = t.match(/^(\d{4}-\d{2}-\d{2})$/)
-  if (dm) {
-    const ms = Date.parse(`${dm[1]}T12:00:00+08:00`)
-    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
-  }
-  const c14 = t.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/)
-  if (c14) {
-    const ms = Date.parse(
-      `${c14[1]}-${c14[2]}-${c14[3]}T${c14[4]}:${c14[5]}:${c14[6]}+08:00`,
-    )
-    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
-  }
-  const c12 = t.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/)
-  if (c12) {
-    const ms = Date.parse(
-      `${c12[1]}-${c12[2]}-${c12[3]}T${c12[4]}:${c12[5]}:00+08:00`,
-    )
-    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
-  }
-  return null
-}
-
-/** lightweight-charts 的 Time → UTC 毫秒，用于按 Asia/Shanghai 格式化 */
-function chartTimeToUtcMs(time) {
-  if (typeof time === 'number') return time * 1000
-  if (typeof time === 'string') {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(time)) {
-      return Date.parse(`${time}T12:00:00+08:00`)
+  if (showVWAP.value) {
+    const vwap = vwapValues(highs, lows, closes, vols, 20)
+    if (!ind.vwap) {
+      ind.vwap = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#ec4899', title: 'VWAP20' },
+        0,
+      )
     }
-    return Date.parse(time)
+    ind.vwap.setData(toLineData(times, vwap))
+  } else {
+    ind.vwap = removeSeriesSafe(ind.vwap)
   }
-  if (time && typeof time === 'object' && 'year' in time && 'month' in time && 'day' in time) {
-    const { year, month, day } = time
-    const mm = String(month).padStart(2, '0')
-    const dd = String(day).padStart(2, '0')
-    return Date.parse(`${year}-${mm}-${dd}T12:00:00+08:00`)
-  }
-  return NaN
-}
 
-function formatTickTime(time, tickMarkType) {
-  const ms = chartTimeToUtcMs(time)
-  if (!Number.isFinite(ms)) return null
-  const d = new Date(ms)
-  const loc = 'zh-CN'
-  if (tickMarkType === TickMarkType.Year) {
-    return new Intl.DateTimeFormat(loc, { timeZone: CN_TZ, year: 'numeric' }).format(d)
+  if (showKAMA.value) {
+    const kama = kamaValues(closes, 10, 2, 30)
+    if (!ind.kama) {
+      ind.kama = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#14b8a6', title: 'KAMA10' },
+        0,
+      )
+    }
+    ind.kama.setData(toLineData(times, kama))
+  } else {
+    ind.kama = removeSeriesSafe(ind.kama)
   }
-  if (tickMarkType === TickMarkType.Month) {
-    return new Intl.DateTimeFormat(loc, { timeZone: CN_TZ, year: 'numeric', month: '2-digit' }).format(d)
+
+  if (showKeltner.value) {
+    const { upper: kU, mid: kM, lower: kL } = keltnerChannelValues(highs, lows, closes, 20, 10, 1.5)
+    if (!ind.keltnerU) {
+      ind.keltnerU = chart.addSeries(
+        LineSeries,
+        {
+          ...lineCommon,
+          color: '#a78bfa',
+          lineStyle: LineStyle.Dashed,
+          title: 'Kelt上',
+        },
+        0,
+      )
+    }
+    if (!ind.keltnerM) {
+      ind.keltnerM = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#8b5cf6', title: 'Kelt中' },
+        0,
+      )
+    }
+    if (!ind.keltnerL) {
+      ind.keltnerL = chart.addSeries(
+        LineSeries,
+        {
+          ...lineCommon,
+          color: '#a78bfa',
+          lineStyle: LineStyle.Dashed,
+          title: 'Kelt下',
+        },
+        0,
+      )
+    }
+    ind.keltnerU.setData(toLineData(times, kU))
+    ind.keltnerM.setData(toLineData(times, kM))
+    ind.keltnerL.setData(toLineData(times, kL))
+  } else {
+    ind.keltnerU = removeSeriesSafe(ind.keltnerU)
+    ind.keltnerM = removeSeriesSafe(ind.keltnerM)
+    ind.keltnerL = removeSeriesSafe(ind.keltnerL)
   }
-  if (tickMarkType === TickMarkType.DayOfMonth) {
-    return new Intl.DateTimeFormat(loc, { timeZone: CN_TZ, month: '2-digit', day: '2-digit' }).format(d)
+
+  if (showSupertrend.value) {
+    const { supertrend: stVal, direction } = supertrendValues(highs, lows, closes, 10, 3)
+    if (!ind.supertrend) {
+      ind.supertrend = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, lineWidth: 2, title: 'ST(10,3)' },
+        0,
+      )
+    }
+    const stData = []
+    for (let i = 0; i < times.length; i++) {
+      if (stVal[i] != null) {
+        stData.push({
+          time: times[i],
+          value: stVal[i],
+          color: direction[i] === 1 ? '#ef4444' : '#22c55e',
+        })
+      }
+    }
+    ind.supertrend.setData(stData)
+  } else {
+    ind.supertrend = removeSeriesSafe(ind.supertrend)
   }
-  return new Intl.DateTimeFormat(loc, {
-    timeZone: CN_TZ,
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(d)
+
+  if (showEMA.value) {
+    const e12 = emaFinite(closes, 12)
+    const e21 = emaFinite(closes, 21)
+    if (!ind.ema12) {
+      ind.ema12 = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#f59e0b', title: 'EMA12' },
+        0,
+      )
+    }
+    if (!ind.ema21) {
+      ind.ema21 = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#3b82f6', title: 'EMA21' },
+        0,
+      )
+    }
+    ind.ema12.setData(toLineData(times, e12))
+    ind.ema21.setData(toLineData(times, e21))
+  } else {
+    ind.ema12 = removeSeriesSafe(ind.ema12)
+    ind.ema21 = removeSeriesSafe(ind.ema21)
+  }
+
+  if (showIchimoku.value) {
+    const { tenkan, kijun, spanA, senkouB, chikou } = ichimokuValues(highs, lows, closes)
+    if (!ind.ichTenkan) {
+      ind.ichTenkan = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#ef4444', title: '转换' },
+        0,
+      )
+    }
+    if (!ind.ichKijun) {
+      ind.ichKijun = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#3b82f6', title: '基准' },
+        0,
+      )
+    }
+    if (!ind.ichSpanA) {
+      ind.ichSpanA = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#22c55e', lineStyle: LineStyle.Dashed, title: '先行A' },
+        0,
+      )
+    }
+    if (!ind.ichSpanB) {
+      ind.ichSpanB = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#ef4444', lineStyle: LineStyle.Dashed, title: '先行B' },
+        0,
+      )
+    }
+    if (!ind.ichChikou) {
+      ind.ichChikou = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#a855f7', lineWidth: 1, lineStyle: LineStyle.Dotted, title: '迟行' },
+        0,
+      )
+    }
+    ind.ichTenkan.setData(toLineData(times, tenkan))
+    ind.ichKijun.setData(toLineData(times, kijun))
+    ind.ichSpanA.setData(toLineData(times, spanA))
+    ind.ichSpanB.setData(toLineData(times, senkouB))
+    ind.ichChikou.setData(toLineData(times, chikou))
+  } else {
+    ind.ichTenkan = removeSeriesSafe(ind.ichTenkan)
+    ind.ichKijun = removeSeriesSafe(ind.ichKijun)
+    ind.ichSpanA = removeSeriesSafe(ind.ichSpanA)
+    ind.ichSpanB = removeSeriesSafe(ind.ichSpanB)
+    ind.ichChikou = removeSeriesSafe(ind.ichChikou)
+  }
+
+  if (showSAR.value) {
+    const { sar, direction } = sarValues(highs, lows, closes, 0.02, 0.2)
+    if (!ind.sar) {
+      ind.sar = chart.addSeries(
+        LineSeries,
+        {
+          ...lineCommon,
+          lineWidth: 0,
+          pointMarkersVisible: true,
+          pointMarkersRadius: 3,
+          title: 'SAR',
+        },
+        0,
+      )
+    }
+    const sarData = []
+    for (let i = 0; i < times.length; i++) {
+      if (sar[i] != null) {
+        sarData.push({
+          time: times[i],
+          value: sar[i],
+          color: direction[i] === 1 ? '#ef4444' : '#22c55e',
+        })
+      }
+    }
+    ind.sar.setData(sarData)
+  } else {
+    ind.sar = removeSeriesSafe(ind.sar)
+  }
+
+  if (showDonchian.value) {
+    const { upper, mid, lower } = donchianChannelValues(highs, lows, 20)
+    if (!ind.donchianU) {
+      ind.donchianU = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#f97316', lineStyle: LineStyle.Dashed, title: 'DC上' },
+        0,
+      )
+    }
+    if (!ind.donchianM) {
+      ind.donchianM = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#fb923c', lineStyle: LineStyle.Dotted, title: 'DC中' },
+        0,
+      )
+    }
+    if (!ind.donchianL) {
+      ind.donchianL = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#f97316', lineStyle: LineStyle.Dashed, title: 'DC下' },
+        0,
+      )
+    }
+    ind.donchianU.setData(toLineData(times, upper))
+    ind.donchianM.setData(toLineData(times, mid))
+    ind.donchianL.setData(toLineData(times, lower))
+  } else {
+    ind.donchianU = removeSeriesSafe(ind.donchianU)
+    ind.donchianM = removeSeriesSafe(ind.donchianM)
+    ind.donchianL = removeSeriesSafe(ind.donchianL)
+  }
+
+  if (showPivot.value) {
+    const { pp, s1, s2, r1, r2 } = pivotPointsValues(highs, lows, closes)
+    if (!ind.pivotPP) {
+      ind.pivotPP = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#a3a3a3', lineStyle: LineStyle.Dotted, title: 'PP' },
+        0,
+      )
+    }
+    if (!ind.pivotS1) {
+      ind.pivotS1 = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#22c55e', lineStyle: LineStyle.Dashed, title: 'S1' },
+        0,
+      )
+    }
+    if (!ind.pivotS2) {
+      ind.pivotS2 = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#16a34a', lineStyle: LineStyle.Dashed, title: 'S2' },
+        0,
+      )
+    }
+    if (!ind.pivotR1) {
+      ind.pivotR1 = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#ef4444', lineStyle: LineStyle.Dashed, title: 'R1' },
+        0,
+      )
+    }
+    if (!ind.pivotR2) {
+      ind.pivotR2 = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#dc2626', lineStyle: LineStyle.Dashed, title: 'R2' },
+        0,
+      )
+    }
+    ind.pivotPP.setData(toLineData(times, pp))
+    ind.pivotS1.setData(toLineData(times, s1))
+    ind.pivotS2.setData(toLineData(times, s2))
+    ind.pivotR1.setData(toLineData(times, r1))
+    ind.pivotR2.setData(toLineData(times, r2))
+  } else {
+    ind.pivotPP = removeSeriesSafe(ind.pivotPP)
+    ind.pivotS1 = removeSeriesSafe(ind.pivotS1)
+    ind.pivotS2 = removeSeriesSafe(ind.pivotS2)
+    ind.pivotR1 = removeSeriesSafe(ind.pivotR1)
+    ind.pivotR2 = removeSeriesSafe(ind.pivotR2)
+  }
+
+  if (showDEMA.value) {
+    const d = demaValues(closes, 21)
+    if (!ind.dema) {
+      ind.dema = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#ec4899', title: 'DEMA21' },
+        0,
+      )
+    }
+    ind.dema.setData(toLineData(times, d))
+  } else {
+    ind.dema = removeSeriesSafe(ind.dema)
+  }
+
+  if (showZigZag.value) {
+    const { zigzag, directions } = zigzagValues(highs, lows, closes, 5)
+    if (!ind.zigzag) {
+      ind.zigzag = chart.addSeries(
+        LineSeries,
+        {
+          ...lineCommon,
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          color: '#f59e0b',
+          pointMarkersVisible: true,
+          pointMarkersRadius: 4,
+          title: 'ZigZag',
+        },
+        0,
+      )
+    }
+    const zzData = []
+    for (let i = 0; i < times.length; i++) {
+      if (zigzag[i] != null) {
+        zzData.push({
+          time: times[i],
+          value: zigzag[i],
+          color: directions[i] === 1 ? '#ef4444' : '#22c55e',
+        })
+      }
+    }
+    ind.zigzag.setData(zzData)
+  } else {
+    ind.zigzag = removeSeriesSafe(ind.zigzag)
+  }
+
+  if (showSATS.value) {
+    const { stLine, upper, lower, direction, tqi } = satsValues(highs, lows, closes, vols)
+    if (!ind.satsLine) {
+      ind.satsLine = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, lineWidth: 2, title: 'SATS' },
+        0,
+      )
+    }
+    const satsData = []
+    for (let i = 0; i < times.length; i++) {
+      if (stLine[i] != null) {
+        satsData.push({
+          time: times[i],
+          value: stLine[i],
+          color: direction[i] === 1 ? '#ef4444' : '#22c55e',
+        })
+      }
+    }
+    ind.satsLine.setData(satsData)
+    if (!ind.satsUpper) {
+      ind.satsUpper = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, lineWidth: 1, lineStyle: LineStyle.Dashed, color: 'rgba(148,163,184,0.35)', title: 'SATS上' },
+        0,
+      )
+    }
+    if (!ind.satsLower) {
+      ind.satsLower = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, lineWidth: 1, lineStyle: LineStyle.Dashed, color: 'rgba(148,163,184,0.35)', title: 'SATS下' },
+        0,
+      )
+    }
+    ind.satsUpper.setData(toLineData(times, upper))
+    ind.satsLower.setData(toLineData(times, lower))
+  } else {
+    ind.satsLine = removeSeriesSafe(ind.satsLine)
+    ind.satsUpper = removeSeriesSafe(ind.satsUpper)
+    ind.satsLower = removeSeriesSafe(ind.satsLower)
+  }
+
+  if (showAlligator.value) {
+    const { jaw, teeth, lips } = alligatorValues(highs, lows, closes)
+    if (!ind.alligatorJaw) {
+      ind.alligatorJaw = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#22c55e', lineWidth: 1, lineStyle: LineStyle.Dashed, title: '颚(13)' },
+        0,
+      )
+    }
+    if (!ind.alligatorTeeth) {
+      ind.alligatorTeeth = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#ef4444', lineWidth: 1, lineStyle: LineStyle.Dashed, title: '齿(8)' },
+        0,
+      )
+    }
+    if (!ind.alligatorLips) {
+      ind.alligatorLips = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#3b82f6', lineWidth: 1, title: '唇(5)' },
+        0,
+      )
+    }
+    ind.alligatorJaw.setData(toLineData(times, jaw))
+    ind.alligatorTeeth.setData(toLineData(times, teeth))
+    ind.alligatorLips.setData(toLineData(times, lips))
+  } else {
+    ind.alligatorJaw = removeSeriesSafe(ind.alligatorJaw)
+    ind.alligatorTeeth = removeSeriesSafe(ind.alligatorTeeth)
+    ind.alligatorLips = removeSeriesSafe(ind.alligatorLips)
+  }
+
+  if (showHullMA.value) {
+    const hull = hullMaValues(closes, 9)
+    if (!ind.hullMA) {
+      ind.hullMA = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#f59e0b', lineWidth: 2, title: 'Hull(9)' },
+        0,
+      )
+    }
+    ind.hullMA.setData(toLineData(times, hull))
+  } else {
+    ind.hullMA = removeSeriesSafe(ind.hullMA)
+  }
+
+  if (showFractal.value) {
+    const { fractalHigh, fractalLow } = fractalValues(highs, lows)
+    if (!ind.fractalHigh) {
+      ind.fractalHigh = chart.addSeries(
+        LineSeries,
+        {
+          ...lineCommon,
+          lineWidth: 0,
+          pointMarkersVisible: true,
+          pointMarkersRadius: 5,
+          title: '▲Fractal',
+          color: '#ef4444',
+        },
+        0,
+      )
+    }
+    if (!ind.fractalLow) {
+      ind.fractalLow = chart.addSeries(
+        LineSeries,
+        {
+          ...lineCommon,
+          lineWidth: 0,
+          pointMarkersVisible: true,
+          pointMarkersRadius: 5,
+          title: '▼Fractal',
+          color: '#22c55e',
+        },
+        0,
+      )
+    }
+    ind.fractalHigh.setData(toLineData(times, fractalHigh))
+    ind.fractalLow.setData(toLineData(times, fractalLow))
+  } else {
+    ind.fractalHigh = removeSeriesSafe(ind.fractalHigh)
+    ind.fractalLow = removeSeriesSafe(ind.fractalLow)
+  }
+
+  if (showVWAPBands.value) {
+    const { vwap: vbM, upper: vbU, lower: vbL } = vwapBandsValues(highs, lows, closes, vols)
+    if (!ind.vwapBandsU) {
+      ind.vwapBandsU = chart.addSeries(
+        LineSeries,
+        {
+          ...lineCommon,
+          color: '#a78bfa',
+          lineStyle: LineStyle.Dashed,
+          title: 'VB上',
+        },
+        0,
+      )
+    }
+    if (!ind.vwapBandsM) {
+      ind.vwapBandsM = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#8b5cf6', title: 'VWAP' },
+        0,
+      )
+    }
+    if (!ind.vwapBandsL) {
+      ind.vwapBandsL = chart.addSeries(
+        LineSeries,
+        {
+          ...lineCommon,
+          color: '#a78bfa',
+          lineStyle: LineStyle.Dashed,
+          title: 'VB下',
+        },
+        0,
+      )
+    }
+    ind.vwapBandsU.setData(toLineData(times, vbU))
+    ind.vwapBandsM.setData(toLineData(times, vbM))
+    ind.vwapBandsL.setData(toLineData(times, vbL))
+  } else {
+    ind.vwapBandsU = removeSeriesSafe(ind.vwapBandsU)
+    ind.vwapBandsM = removeSeriesSafe(ind.vwapBandsM)
+    ind.vwapBandsL = removeSeriesSafe(ind.vwapBandsL)
+  }
+
+  if (showTEMA.value) {
+    const tema = temaValues(closes, 21)
+    if (!ind.temaLine) {
+      ind.temaLine = chart.addSeries(
+        LineSeries,
+        { ...lineCommon, color: '#06b6d4', lineWidth: 2, title: 'TEMA(21)' },
+        0,
+      )
+    }
+    ind.temaLine.setData(toLineData(times, tema))
+  } else {
+    ind.temaLine = removeSeriesSafe(ind.temaLine)
+  }
+
+  if (showSMC.value) {
+    const smc = smcValues(highs, lows, closes, opens)
+    if (!ind.smcSwingHigh) {
+      ind.smcSwingHigh = chart.addSeries(LineSeries, { ...lineCommon, color: '#ef4444', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 6, title: 'SwH', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcSwingLow = chart.addSeries(LineSeries, { ...lineCommon, color: '#22c55e', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 6, title: 'SwL', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcIntHigh = chart.addSeries(LineSeries, { ...lineCommon, color: '#f87171', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 3, title: 'iH', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcIntLow = chart.addSeries(LineSeries, { ...lineCommon, color: '#4ade80', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 3, title: 'iL', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcBos = chart.addSeries(LineSeries, { ...lineCommon, color: '#3b82f6', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 4, title: 'BOS', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcChoch = chart.addSeries(LineSeries, { ...lineCommon, color: '#f59e0b', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 4, title: 'CHoCH', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcSwBos = chart.addSeries(LineSeries, { ...lineCommon, color: '#6366f1', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 5, title: 'SwBOS', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcSwChoch = chart.addSeries(LineSeries, { ...lineCommon, color: '#eab308', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 5, title: 'SwCHoCH', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcFvgTop = chart.addSeries(LineSeries, { ...lineCommon, color: '#ef4444', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 2, title: 'FVG↑', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcFvgBot = chart.addSeries(LineSeries, { ...lineCommon, color: '#22c55e', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 2, title: 'FVG↓', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcObTop = chart.addSeries(LineSeries, { ...lineCommon, color: '#ef4444', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 3, title: 'OB↑', lastValueVisible: false, priceLineVisible: false }, 0)
+      ind.smcObBot = chart.addSeries(LineSeries, { ...lineCommon, color: '#22c55e', lineWidth: 0, pointMarkersVisible: true, pointMarkersRadius: 3, title: 'OB↓', lastValueVisible: false, priceLineVisible: false }, 0)
+    }
+    ind.smcSwingHigh.setData(smc.swingHighPoints.map(p => ({ time: times[p.idx], value: p.price })).sort((a, b) => a.time - b.time))
+    ind.smcSwingLow.setData(smc.swingLowPoints.map(p => ({ time: times[p.idx], value: p.price })).sort((a, b) => a.time - b.time))
+    ind.smcIntHigh.setData(smc.intHighPoints.map(p => ({ time: times[p.idx], value: p.price })).sort((a, b) => a.time - b.time))
+    ind.smcIntLow.setData(smc.intLowPoints.map(p => ({ time: times[p.idx], value: p.price })).sort((a, b) => a.time - b.time))
+    ind.smcBos.setData(smc.bosLines.map(b => ({ time: times[b.toIdx], value: b.toPrice })).sort((a, b) => a.time - b.time))
+    ind.smcChoch.setData(smc.chochLines.map(b => ({ time: times[b.toIdx], value: b.toPrice })).sort((a, b) => a.time - b.time))
+    ind.smcSwBos.setData(smc.swingBosLines.map(b => ({ time: times[b.toIdx], value: b.toPrice })).sort((a, b) => a.time - b.time))
+    ind.smcSwChoch.setData(smc.swingChochLines.map(b => ({ time: times[b.toIdx], value: b.toPrice })).sort((a, b) => a.time - b.time))
+    const fvgTopData = smc.fvgZones.filter(z => !z.mitigated).map(z => ({ time: times[z.startIdx], value: z.top })).sort((a, b) => a.time - b.time)
+    const fvgBotData = smc.fvgZones.filter(z => !z.mitigated).map(z => ({ time: times[z.startIdx], value: z.bot })).sort((a, b) => a.time - b.time)
+    ind.smcFvgTop.setData(fvgTopData)
+    ind.smcFvgBot.setData(fvgBotData)
+    const obTopData = smc.orderBlocks.filter(o => !o.mitigated).map(o => ({ time: times[o.idx], value: o.top })).sort((a, b) => a.time - b.time)
+    const obBotData = smc.orderBlocks.filter(o => !o.mitigated).map(o => ({ time: times[o.idx], value: o.bot })).sort((a, b) => a.time - b.time)
+    ind.smcObTop.setData(obTopData)
+    ind.smcObBot.setData(obBotData)
+  } else {
+    ind.smcSwingHigh = removeSeriesSafe(ind.smcSwingHigh)
+    ind.smcSwingLow = removeSeriesSafe(ind.smcSwingLow)
+    ind.smcIntHigh = removeSeriesSafe(ind.smcIntHigh)
+    ind.smcIntLow = removeSeriesSafe(ind.smcIntLow)
+    ind.smcBos = removeSeriesSafe(ind.smcBos)
+    ind.smcChoch = removeSeriesSafe(ind.smcChoch)
+    ind.smcSwBos = removeSeriesSafe(ind.smcSwBos)
+    ind.smcSwChoch = removeSeriesSafe(ind.smcSwChoch)
+    ind.smcFvgTop = removeSeriesSafe(ind.smcFvgTop)
+    ind.smcFvgBot = removeSeriesSafe(ind.smcFvgBot)
+    ind.smcObTop = removeSeriesSafe(ind.smcObTop)
+    ind.smcObBot = removeSeriesSafe(ind.smcObBot)
+  }
+
+  syncSubPaneIndicators(times, closes, highs, lows, vols)
 }
 
 function formatCrosshairTime(time) {
@@ -944,45 +2087,6 @@ function syncDefaultLatestPanelRow() {
   defaultLatestRawRow.value = rows[rows.length - 1]
 }
 
-function parseNumStr(s) {
-  const n = Number(String(s ?? '').replace(/,/g, '').replace(/%/g, '').trim())
-  return Number.isFinite(n) ? n : NaN
-}
-
-function formatPrice2(s) {
-  const n = parseNumStr(s)
-  return Number.isFinite(n) ? n.toFixed(2) : '--'
-}
-
-/** 成交量：东财为手，按万/亿缩写 */
-function formatVolumeCn(s) {
-  const n = parseNumStr(s)
-  if (!Number.isFinite(n)) return '--'
-  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`
-  if (n >= 1e4) return `${(n / 1e4).toFixed(2)}万`
-  return String(Math.round(n))
-}
-
-/** 成交额：元 → 亿 */
-function formatAmountCn(s) {
-  const n = parseNumStr(s)
-  if (!Number.isFinite(n)) return '--'
-  return `${(n / 1e8).toFixed(2)}亿`
-}
-
-function formatPctField(s) {
-  const n = parseNumStr(s)
-  if (!Number.isFinite(n)) return '--'
-  return `${n.toFixed(2)}%`
-}
-
-function formatSigned2(s) {
-  const n = parseNumStr(s)
-  if (!Number.isFinite(n)) return '--'
-  const t = n.toFixed(2)
-  return n > 0 ? `+${t}` : t
-}
-
 function formatPanelTitleDay(r) {
   const dailyLike = DAILY_LIKE_KLT.has(activeKlt.value)
   if (dailyLike) {
@@ -1004,6 +2108,30 @@ const crosshairPanel = computed(() => {
   const chgC = sign > 0 ? CLR_RISE : sign < 0 ? CLR_FALL : neu
   const showLatestTag = !hoverRawRow.value && defaultLatestRawRow.value
   const titleDay = formatPanelTitleDay(r)
+  const curDay = String(r.day || '').replace(/\//g, '-')
+  const curIdx = mergedRawRows.findIndex(x => String(x.day || '').replace(/\//g, '-') === curDay)
+  const amps = []
+  for (let i = 0; i <= curIdx; i++) {
+    const row = mergedRawRows[i]
+    const rawAmp = parseNumStr(row.amplitude)
+    const o = Number(row.open), h = Number(row.high), l = Number(row.low)
+    if (Number.isFinite(rawAmp)) {
+      amps.push(rawAmp)
+    } else if (Number.isFinite(o) && o > 0 && Number.isFinite(h) && Number.isFinite(l)) {
+      amps.push((h - l) / o * 100)
+    } else {
+      amps.push(NaN)
+    }
+  }
+  let amp5 = '--', amp10 = '--', amp20 = '--'
+  if (curIdx >= 0) {
+    const a5 = avgAmplitude(amps, 5)
+    const a10 = avgAmplitude(amps, 10)
+    const a20 = avgAmplitude(amps, 20)
+    if (Number.isFinite(a5)) amp5 = a5.toFixed(2) + '%'
+    if (Number.isFinite(a10)) amp10 = a10.toFixed(2) + '%'
+    if (Number.isFinite(a20)) amp20 = a20.toFixed(2) + '%'
+  }
   return {
     title: showLatestTag ? `${titleDay} · 最新` : titleDay,
     open: formatPrice2(r.open),
@@ -1015,12 +2143,590 @@ const crosshairPanel = computed(() => {
     volume: formatVolumeCn(r.volume),
     amount: formatAmountCn(r.amount),
     amplitude: formatPctField(r.amplitude),
+    avgAmp5: amp5,
+    avgAmp10: amp10,
+    avgAmp20: amp20,
     turnoverRate: formatPctField(r.turnoverRate),
+    volumeRatio: formatVolumeRatio(r.volumeRatio),
     cOpenClose: ohlcC,
     cHigh: CLR_RISE,
     cLow: CLR_FALL,
     cChg: chgC,
     cNeu: neu,
+  }
+})
+
+function evaluateIndicatorSignals(endIdx) {
+  const rows = mergedRawRows
+  if (!rows || rows.length < 2) return []
+
+  // 截取到 endIdx（含），使指标计算基于该 K 线位置的数据
+  const sliced = endIdx != null && endIdx >= 0 && endIdx < rows.length - 1
+    ? rows.slice(0, endIdx + 1)
+    : rows
+  const { times, opens, closes, highs, lows, vols } = extractOHLCV(sliced)
+  const n = times.length
+  if (n < 2) return []
+
+  const last = (arr) => {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (arr[i] != null && Number.isFinite(arr[i])) return arr[i]
+    }
+    return null
+  }
+  const prev = (arr) => {
+    let cnt = 0
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (arr[i] != null && Number.isFinite(arr[i])) {
+        cnt++
+        if (cnt === 2) return arr[i]
+      }
+    }
+    return null
+  }
+  const signals = []
+
+  // ── Trend indicators ──
+
+  // MA
+  {
+    const m5 = smaValues(closes, 5)
+    const m10 = smaValues(closes, 10)
+    const m20 = smaValues(closes, 20)
+    const m60 = smaValues(closes, 60)
+    const v5 = last(m5), v10 = last(m10), v20 = last(m20), v60 = last(m60)
+    if (v5 != null && v10 != null && v20 != null && v60 != null) {
+      if (v5 > v10 && v10 > v20 && v20 > v60) signals.push({ name: 'MA', signal: 'bullish' })
+      else if (v5 < v10 && v10 < v20 && v20 < v60) signals.push({ name: 'MA', signal: 'bearish' })
+      else if ((v5 > v20 && v10 < v60) || (v5 < v20 && v10 > v60)) signals.push({ name: 'MA', signal: 'oscillating' })
+      else signals.push({ name: 'MA', signal: 'neutral' })
+    }
+  }
+
+  // EMA
+  {
+    const e12 = emaFinite(closes, 12)
+    const e21 = emaFinite(closes, 21)
+    const v12 = last(e12), v21 = last(e21)
+    if (v12 != null && v21 != null) {
+      if (v12 > v21) signals.push({ name: 'EMA', signal: 'bullish' })
+      else if (v12 < v21) signals.push({ name: 'EMA', signal: 'bearish' })
+      else signals.push({ name: 'EMA', signal: 'neutral' })
+    }
+  }
+
+  // BOLL
+  {
+    const { upper, mid, lower } = bollingerBands(closes, 20, 2)
+    const vU = last(upper), vM = last(mid), vL = last(lower), c = closes[n - 1]
+    if (vU != null && vM != null && vL != null) {
+      if (c > vU) signals.push({ name: 'BOLL', signal: 'bullish' })
+      else if (c < vL) signals.push({ name: 'BOLL', signal: 'bearish' })
+      else if (c > vM) signals.push({ name: 'BOLL', signal: 'oscillating' })
+      else signals.push({ name: 'BOLL', signal: 'neutral' })
+    }
+  }
+
+  // VWAP
+  {
+    const vw = vwapValues(highs, lows, closes, vols, 20)
+    const v = last(vw), c = closes[n - 1]
+    if (v != null) {
+      if (c > v) signals.push({ name: 'VWAP', signal: 'bullish' })
+      else if (c < v) signals.push({ name: 'VWAP', signal: 'bearish' })
+      else signals.push({ name: 'VWAP', signal: 'neutral' })
+    }
+  }
+
+  // DEMA
+  {
+    const d = demaValues(closes, 21)
+    const v = last(d), c = closes[n - 1]
+    if (v != null) {
+      if (c > v) signals.push({ name: 'DEMA', signal: 'bullish' })
+      else if (c < v) signals.push({ name: 'DEMA', signal: 'bearish' })
+      else signals.push({ name: 'DEMA', signal: 'neutral' })
+    }
+  }
+
+  // TEMA
+  {
+    const t = temaValues(closes, 21)
+    const v = last(t), c = closes[n - 1]
+    if (v != null) {
+      if (c > v) signals.push({ name: 'TEMA', signal: 'bullish' })
+      else if (c < v) signals.push({ name: 'TEMA', signal: 'bearish' })
+      else signals.push({ name: 'TEMA', signal: 'neutral' })
+    }
+  }
+
+  // KAMA
+  {
+    const k = kamaValues(closes, 10, 2, 30)
+    const v = last(k), c = closes[n - 1], pv = prev(k)
+    if (v != null && pv != null) {
+      if (c > v && v > pv) signals.push({ name: 'KAMA', signal: 'bullish' })
+      else if (c < v && v < pv) signals.push({ name: 'KAMA', signal: 'bearish' })
+      else signals.push({ name: 'KAMA', signal: 'neutral' })
+    }
+  }
+
+  // HullMA
+  {
+    const h = hullMaValues(closes, 9)
+    const v = last(h), pv = prev(h)
+    if (v != null && pv != null) {
+      if (v > pv) signals.push({ name: 'HullMA', signal: 'bullish' })
+      else if (v < pv) signals.push({ name: 'HullMA', signal: 'bearish' })
+      else signals.push({ name: 'HullMA', signal: 'neutral' })
+    }
+  }
+
+  // Keltner
+  {
+    const { upper: kU, mid: kM, lower: kL } = keltnerChannelValues(highs, lows, closes, 20, 10, 1.5)
+    const vU = last(kU), vM = last(kM), vL = last(kL), c = closes[n - 1]
+    if (vU != null && vL != null) {
+      if (c > vU) signals.push({ name: 'Keltner', signal: 'bullish' })
+      else if (c < vL) signals.push({ name: 'Keltner', signal: 'bearish' })
+      else signals.push({ name: 'Keltner', signal: 'oscillating' })
+    }
+  }
+
+  // SuperTrend
+  {
+    const { supertrend: stVal, direction } = supertrendValues(highs, lows, closes, 10, 3)
+    const d = last(direction)
+    if (d != null) {
+      if (d === 1) signals.push({ name: 'SuperTrend', signal: 'bullish' })
+      else if (d === -1) signals.push({ name: 'SuperTrend', signal: 'bearish' })
+      else signals.push({ name: 'SuperTrend', signal: 'neutral' })
+    }
+  }
+
+  // Ichimoku
+  {
+    const { tenkan, kijun, spanA, senkouB } = ichimokuValues(highs, lows, closes)
+    const vT = last(tenkan), vK = last(kijun), vSA = last(spanA), vSB = last(senkouB), c = closes[n - 1]
+    if (vT != null && vK != null && vSA != null && vSB != null) {
+      const cloudTop = Math.max(vSA, vSB)
+      const cloudBot = Math.min(vSA, vSB)
+      if (c > cloudTop && vT > vK) signals.push({ name: 'Ichimoku', signal: 'bullish' })
+      else if (c < cloudBot && vT < vK) signals.push({ name: 'Ichimoku', signal: 'bearish' })
+      else if (c >= cloudBot && c <= cloudTop) signals.push({ name: 'Ichimoku', signal: 'oscillating' })
+      else signals.push({ name: 'Ichimoku', signal: 'neutral' })
+    }
+  }
+
+  // SAR
+  {
+    const { sar, direction } = sarValues(highs, lows, closes, 0.02, 0.2)
+    const d = last(direction)
+    if (d != null) {
+      if (d === 1) signals.push({ name: 'SAR', signal: 'bullish' })
+      else if (d === -1) signals.push({ name: 'SAR', signal: 'bearish' })
+      else signals.push({ name: 'SAR', signal: 'neutral' })
+    }
+  }
+
+  // Donchian
+  {
+    const { upper, mid, lower } = donchianChannelValues(highs, lows, 20)
+    const vU = last(upper), vL = last(lower), c = closes[n - 1]
+    if (vU != null && vL != null) {
+      if (c >= vU) signals.push({ name: 'Donchian', signal: 'bullish' })
+      else if (c <= vL) signals.push({ name: 'Donchian', signal: 'bearish' })
+      else signals.push({ name: 'Donchian', signal: 'oscillating' })
+    }
+  }
+
+  // Alligator
+  {
+    const { jaw, teeth, lips } = alligatorValues(highs, lows, closes)
+    const vJ = last(jaw), vT = last(teeth), vL = last(lips)
+    if (vJ != null && vT != null && vL != null) {
+      if (vL > vT && vT > vJ) signals.push({ name: 'Alligator', signal: 'bullish' })
+      else if (vL < vT && vT < vJ) signals.push({ name: 'Alligator', signal: 'bearish' })
+      else signals.push({ name: 'Alligator', signal: 'oscillating' })
+    }
+  }
+
+  // ZigZag
+  {
+    const { directions } = zigzagValues(highs, lows, closes, 5)
+    let zzDir = 0
+    for (let i = directions.length - 1; i >= 0; i--) {
+      if (directions[i] === 1 || directions[i] === -1) { zzDir = directions[i]; break }
+    }
+    if (zzDir === -1) signals.push({ name: 'ZigZag', signal: 'bullish' })
+    else if (zzDir === 1) signals.push({ name: 'ZigZag', signal: 'bearish' })
+    else signals.push({ name: 'ZigZag', signal: 'neutral' })
+  }
+
+  // SATS
+  {
+    const { direction } = satsValues(highs, lows, closes, vols)
+    const d = last(direction)
+    if (d != null) {
+      if (d === 1) signals.push({ name: 'SATS', signal: 'bullish' })
+      else if (d === -1) signals.push({ name: 'SATS', signal: 'bearish' })
+      else signals.push({ name: 'SATS', signal: 'neutral' })
+    }
+  }
+
+  // Pivot
+  {
+    const { pp, s1, r1 } = pivotPointsValues(highs, lows, closes)
+    const vPP = last(pp), vS1 = last(s1), vR1 = last(r1), c = closes[n - 1]
+    if (vPP != null && vR1 != null && vS1 != null) {
+      if (c > vR1) signals.push({ name: 'Pivot', signal: 'bullish' })
+      else if (c < vS1) signals.push({ name: 'Pivot', signal: 'bearish' })
+      else if (c > vPP) signals.push({ name: 'Pivot', signal: 'oscillating' })
+      else signals.push({ name: 'Pivot', signal: 'neutral' })
+    }
+  }
+
+  // VWAPBands
+  {
+    const { vwap: vbM, upper: vbU, lower: vbL } = vwapBandsValues(highs, lows, closes, vols)
+    const vU = last(vbU), vL = last(vbL), c = closes[n - 1]
+    if (vU != null && vL != null) {
+      if (c > vU) signals.push({ name: 'VWAPBands', signal: 'bullish' })
+      else if (c < vL) signals.push({ name: 'VWAPBands', signal: 'bearish' })
+      else signals.push({ name: 'VWAPBands', signal: 'oscillating' })
+    }
+  }
+
+  // ── Momentum / oscillator indicators ──
+
+  // MACD
+  {
+    const { dif, dea, hist } = macdBundle(closes)
+    const vDif = last(dif), vDea = last(dea), vHist = last(hist), pHist = prev(hist)
+    if (vDif != null && vDea != null && vHist != null) {
+      if (vDif > vDea && vHist > 0) signals.push({ name: 'MACD', signal: 'bullish' })
+      else if (vDif < vDea && vHist < 0) signals.push({ name: 'MACD', signal: 'bearish' })
+      else if (vDif > 0 && vHist < 0) signals.push({ name: 'MACD', signal: 'oscillating' })
+      else if (vDif < 0 && vHist > 0) signals.push({ name: 'MACD', signal: 'oscillating' })
+      else signals.push({ name: 'MACD', signal: 'neutral' })
+    }
+  }
+
+  // RSI
+  {
+    const rsi = rsiBundle(closes, 14)
+    const v = last(rsi)
+    if (v != null) {
+      if (v > 70) signals.push({ name: 'RSI', signal: 'oscillating' })
+      else if (v < 30) signals.push({ name: 'RSI', signal: 'oscillating' })
+      else if (v > 50) signals.push({ name: 'RSI', signal: 'bullish' })
+      else signals.push({ name: 'RSI', signal: 'bearish' })
+    }
+  }
+
+  // KDJ
+  {
+    const { K, D, J } = kdjBundle(highs, lows, closes, 9)
+    const vK = last(K), vD = last(D), vJ = last(J)
+    if (vK != null && vD != null && vJ != null) {
+      if (vJ > vK && vK > vD && vK < 80) signals.push({ name: 'KDJ', signal: 'bullish' })
+      else if (vJ < vK && vK < vD && vK > 20) signals.push({ name: 'KDJ', signal: 'bearish' })
+      else if (vK > 80) signals.push({ name: 'KDJ', signal: 'bearish' })
+      else if (vK < 20) signals.push({ name: 'KDJ', signal: 'bullish' })
+      else signals.push({ name: 'KDJ', signal: 'oscillating' })
+    }
+  }
+
+  // CCI
+  {
+    const cci = cciValues(highs, lows, closes, 20)
+    const v = last(cci)
+    if (v != null) {
+      if (v > 100) signals.push({ name: 'CCI', signal: 'bullish' })
+      else if (v < -100) signals.push({ name: 'CCI', signal: 'bearish' })
+      else signals.push({ name: 'CCI', signal: 'oscillating' })
+    }
+  }
+
+  // Williams %R
+  {
+    const wr = williamsRValues(highs, lows, closes, 14)
+    const v = last(wr)
+    if (v != null) {
+      if (v < -80) signals.push({ name: 'W%R', signal: 'bullish' })
+      else if (v > -20) signals.push({ name: 'W%R', signal: 'bearish' })
+      else signals.push({ name: 'W%R', signal: 'oscillating' })
+    }
+  }
+
+  // StochRSI
+  {
+    const { k, d } = stochRsiValues(closes, 14, 14, 3, 3)
+    const vK = last(k), vD = last(d)
+    if (vK != null && vD != null) {
+      if (vK < 20 && vD < 20 && vK > vD) signals.push({ name: 'StochRSI', signal: 'bullish' })
+      else if (vK > 80 && vD > 80 && vK < vD) signals.push({ name: 'StochRSI', signal: 'bearish' })
+      else signals.push({ name: 'StochRSI', signal: 'oscillating' })
+    }
+  }
+
+  // ADX
+  {
+    const { adx, diP, diM } = adxValues(highs, lows, closes, 14)
+    const vAdx = last(adx), vP = last(diP), vM = last(diM)
+    if (vAdx != null && vP != null && vM != null) {
+      if (vAdx > 25 && vP > vM) signals.push({ name: 'ADX', signal: 'bullish' })
+      else if (vAdx > 25 && vP < vM) signals.push({ name: 'ADX', signal: 'bearish' })
+      else signals.push({ name: 'ADX', signal: 'oscillating' })
+    }
+  }
+
+  // Aroon
+  {
+    const { up, down } = aroonValues(highs, lows, 25)
+    const vU = last(up), vD = last(down)
+    if (vU != null && vD != null) {
+      if (vU > 70 && vD < 30) signals.push({ name: 'Aroon', signal: 'bullish' })
+      else if (vD > 70 && vU < 30) signals.push({ name: 'Aroon', signal: 'bearish' })
+      else signals.push({ name: 'Aroon', signal: 'oscillating' })
+    }
+  }
+
+  // CMO
+  {
+    const cmo = cmoValues(closes, 14)
+    const v = last(cmo)
+    if (v != null) {
+      if (v > 50) signals.push({ name: 'CMO', signal: 'bullish' })
+      else if (v < -50) signals.push({ name: 'CMO', signal: 'bearish' })
+      else signals.push({ name: 'CMO', signal: 'oscillating' })
+    }
+  }
+
+  // TRIX
+  {
+    const trix = trixValues(closes, 15)
+    const signal = emaLeadingNull(trix, 9)
+    const vT = last(trix), vS = last(signal)
+    if (vT != null && vS != null) {
+      if (vT > vS) signals.push({ name: 'TRIX', signal: 'bullish' })
+      else if (vT < vS) signals.push({ name: 'TRIX', signal: 'bearish' })
+      else signals.push({ name: 'TRIX', signal: 'neutral' })
+    }
+  }
+
+  // ROC
+  {
+    const roc = rocValues(closes, 12)
+    const v = last(roc)
+    if (v != null) {
+      if (v > 0) signals.push({ name: 'ROC', signal: 'bullish' })
+      else if (v < 0) signals.push({ name: 'ROC', signal: 'bearish' })
+      else signals.push({ name: 'ROC', signal: 'neutral' })
+    }
+  }
+
+  // Coppock
+  {
+    const cp = coppockValues(closes)
+    const v = last(cp), pv = prev(cp)
+    if (v != null && pv != null) {
+      if (v > 0 && pv <= 0) signals.push({ name: 'Coppock', signal: 'bullish' })
+      else if (v < 0) signals.push({ name: 'Coppock', signal: 'bearish' })
+      else signals.push({ name: 'Coppock', signal: 'neutral' })
+    }
+  }
+
+  // SMI
+  {
+    const { smi: smiData, signal: smiSig } = smiValues(highs, lows, closes)
+    const vSmi = last(smiData), vSig = last(smiSig)
+    if (vSmi != null && vSig != null) {
+      if (vSmi > vSig && vSmi > 0) signals.push({ name: 'SMI', signal: 'bullish' })
+      else if (vSmi < vSig && vSmi < 0) signals.push({ name: 'SMI', signal: 'bearish' })
+      else signals.push({ name: 'SMI', signal: 'oscillating' })
+    }
+  }
+
+  // AO
+  {
+    const ao = aoValues(highs, lows)
+    const v = last(ao), pv = prev(ao)
+    if (v != null && pv != null) {
+      if (v > 0 && v > pv) signals.push({ name: 'AO', signal: 'bullish' })
+      else if (v < 0 && v < pv) signals.push({ name: 'AO', signal: 'bearish' })
+      else if (v > 0 && v < pv) signals.push({ name: 'AO', signal: 'oscillating' })
+      else signals.push({ name: 'AO', signal: 'neutral' })
+    }
+  }
+
+  // ── Volume indicators ──
+
+  // OBV
+  {
+    const obv = obvValues(closes, vols)
+    const v = last(obv), pv = prev(obv)
+    if (v != null && pv != null) {
+      if (v > pv) signals.push({ name: 'OBV', signal: 'bullish' })
+      else if (v < pv) signals.push({ name: 'OBV', signal: 'bearish' })
+      else signals.push({ name: 'OBV', signal: 'neutral' })
+    }
+  }
+
+  // MFI
+  {
+    const mfi = mfiValues(highs, lows, closes, vols, 14)
+    const v = last(mfi)
+    if (v != null) {
+      if (v > 80) signals.push({ name: 'MFI', signal: 'oscillating' })
+      else if (v < 20) signals.push({ name: 'MFI', signal: 'oscillating' })
+      else if (v > 50) signals.push({ name: 'MFI', signal: 'bullish' })
+      else signals.push({ name: 'MFI', signal: 'bearish' })
+    }
+  }
+
+  // CMF
+  {
+    const cmf = cmfValues(highs, lows, closes, vols, 20)
+    const v = last(cmf)
+    if (v != null) {
+      if (v > 0.05) signals.push({ name: 'CMF', signal: 'bullish' })
+      else if (v < -0.05) signals.push({ name: 'CMF', signal: 'bearish' })
+      else signals.push({ name: 'CMF', signal: 'oscillating' })
+    }
+  }
+
+  // A/D
+  {
+    const ad = adValues(highs, lows, closes, vols)
+    const v = last(ad), pv = prev(ad)
+    if (v != null && pv != null) {
+      if (v > pv) signals.push({ name: 'A/D', signal: 'bullish' })
+      else if (v < pv) signals.push({ name: 'A/D', signal: 'bearish' })
+      else signals.push({ name: 'A/D', signal: 'neutral' })
+    }
+  }
+
+  // ForceIndex
+  {
+    const fi = forceIndexValues(closes, vols, 13)
+    const v = last(fi)
+    if (v != null) {
+      if (v > 0) signals.push({ name: 'FI', signal: 'bullish' })
+      else if (v < 0) signals.push({ name: 'FI', signal: 'bearish' })
+      else signals.push({ name: 'FI', signal: 'neutral' })
+    }
+  }
+
+  // ChaikinOsc
+  {
+    const co = chaikinOscValues(highs, lows, closes, vols, 3, 10)
+    const v = last(co), pv = prev(co)
+    if (v != null && pv != null) {
+      if (v > 0 && v > pv) signals.push({ name: 'ChaikinOsc', signal: 'bullish' })
+      else if (v < 0 && v < pv) signals.push({ name: 'ChaikinOsc', signal: 'bearish' })
+      else signals.push({ name: 'ChaikinOsc', signal: 'oscillating' })
+    }
+  }
+
+  // ── Volatility indicators ──
+
+  // ATR
+  {
+    const atr = atrValues(highs, lows, closes, 14)
+    const v = last(atr), pv = prev(atr)
+    if (v != null && pv != null) {
+      if (v > pv) signals.push({ name: 'ATR', signal: 'oscillating' })
+      else signals.push({ name: 'ATR', signal: 'neutral' })
+    }
+  }
+
+  // CHOP
+  {
+    const chop = chopValues(highs, lows, closes, 14)
+    const v = last(chop)
+    if (v != null) {
+      if (v > 61.8) signals.push({ name: 'CHOP', signal: 'oscillating' })
+      else signals.push({ name: 'CHOP', signal: 'neutral' })
+    }
+  }
+
+  // MassIndex
+  {
+    const mi = massIndexValues(highs, lows)
+    const v = last(mi), pv = prev(mi)
+    if (v != null && pv != null) {
+      if (pv > 27 && v < 27) signals.push({ name: 'MassIndex', signal: 'bullish' })
+      else signals.push({ name: 'MassIndex', signal: 'neutral' })
+    }
+  }
+
+  // UlcerIndex
+  {
+    const ui = ulcerIndexValues(closes)
+    const v = last(ui)
+    if (v != null) {
+      if (v < 5) signals.push({ name: 'UlcerIndex', signal: 'bullish' })
+      else if (v > 15) signals.push({ name: 'UlcerIndex', signal: 'bearish' })
+      else signals.push({ name: 'UlcerIndex', signal: 'neutral' })
+    }
+  }
+
+  // TTMSqueeze
+  {
+    const { squeeze, momentum } = ttmSqueezeValues(highs, lows, closes)
+    const sq = last(squeeze), mo = last(momentum), pMo = prev(momentum)
+    if (sq != null && mo != null) {
+      if (!sq && mo > 0) signals.push({ name: 'TTM', signal: 'bullish' })
+      else if (!sq && mo < 0) signals.push({ name: 'TTM', signal: 'bearish' })
+      else if (sq) signals.push({ name: 'TTM', signal: 'oscillating' })
+      else signals.push({ name: 'TTM', signal: 'neutral' })
+    }
+  }
+
+  // ElderRay
+  {
+    const { bullPower, bearPower } = elderRayValues(highs, lows, closes, 13)
+    const bP = last(bullPower), brP = last(bearPower)
+    if (bP != null && brP != null) {
+      if (bP > 0 && bP > brP) signals.push({ name: 'ElderRay', signal: 'bullish' })
+      else if (brP < 0 && brP < bP) signals.push({ name: 'ElderRay', signal: 'bearish' })
+      else signals.push({ name: 'ElderRay', signal: 'oscillating' })
+    }
+  }
+
+  return signals
+}
+
+const indicatorSignalSummary = computed(() => {
+  // 依赖 mergedRawRowsVersion 以感知 mergedRawRows 变更
+  void mergedRawRowsVersion.value
+  // 根据 hoverRawRow 计算当前光标对应的 K 线索引
+  const hoveredRow = hoverRawRow.value
+  let endIdx = null
+  if (hoveredRow) {
+    const curDay = String(hoveredRow.day || '').replace(/\//g, '-')
+    const idx = mergedRawRows.findIndex(x => String(x.day || '').replace(/\//g, '-') === curDay)
+    if (idx >= 0) endIdx = idx
+  }
+  const sigs = evaluateIndicatorSignals(endIdx)
+  if (!sigs.length) return null
+  const counts = { bullish: 0, bearish: 0, neutral: 0, oscillating: 0 }
+  for (const s of sigs) {
+    if (counts[s.signal] !== undefined) counts[s.signal]++
+  }
+  const total = sigs.length
+  return {
+    total,
+    bullish: counts.bullish,
+    bearish: counts.bearish,
+    neutral: counts.neutral,
+    oscillating: counts.oscillating,
+    bullishPct: total > 0 ? Math.round((counts.bullish / total) * 100) : 0,
+    bearishPct: total > 0 ? Math.round((counts.bearish / total) * 100) : 0,
+    neutralPct: total > 0 ? Math.round((counts.neutral / total) * 100) : 0,
+    oscillatingPct: total > 0 ? Math.round((counts.oscillating / total) * 100) : 0,
+    signals: sigs,
   }
 })
 
@@ -1420,88 +3126,6 @@ function chartThemeOptions(isDark) {
   }
 }
 
-function sortKey(dayStr) {
-  const sec = eastMoneyKlineFieldToUnixSeconds(dayStr)
-  if (sec != null) return sec * 1000
-  const s = String(dayStr || '').trim()
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (m) {
-    return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-  }
-  return 0
-}
-
-/** @returns {number|string|null} lightweight-charts Time */
-function toChartTime(dayStr) {
-  const s = String(dayStr || '').trim()
-  if (!s) return null
-  const sec = eastMoneyDayToUnixSeconds(dayStr)
-  if (sec != null) return sec
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  const sec2 = eastMoneyKlineFieldToUnixSeconds(s)
-  if (sec2 != null) return sec2
-  return s
-}
-
-function mergeKlineRows(existing, incoming) {
-  const map = new Map()
-  for (const r of existing) {
-    if (r?.day) map.set(r.day, r)
-  }
-  for (const r of incoming) {
-    if (r?.day && !map.has(r.day)) map.set(r.day, r)
-  }
-  return Array.from(map.values()).sort((a, b) => sortKey(a.day) - sortKey(b.day))
-}
-
-/** 定时刷新：保留已向左加载的更久历史，只与最新一段合并 */
-function mergeRefreshWithLatest(existingSorted, latestChunk) {
-  const list = Array.isArray(latestChunk) ? latestChunk : []
-  if (!list.length) return existingSorted.length ? existingSorted : []
-  const sortedLatest = [...list].sort((a, b) => sortKey(a.day) - sortKey(b.day))
-  const cutoff = sortKey(sortedLatest[0].day)
-  const kept = existingSorted.filter((r) => sortKey(r.day) < cutoff)
-  const map = new Map()
-  for (const r of kept) {
-    if (r?.day) map.set(r.day, r)
-  }
-  for (const r of sortedLatest) {
-    if (r?.day) map.set(r.day, r)
-  }
-  return Array.from(map.values()).sort((a, b) => sortKey(a.day) - sortKey(b.day))
-}
-
-function formatYmdCompactShanghai(ms) {
-  return new Date(ms)
-    .toLocaleString('sv-SE', { timeZone: CN_TZ })
-    .slice(0, 10)
-    .replace(/-/g, '')
-}
-
-function formatYmdHmsCompactShanghai(ms) {
-  return new Date(ms)
-    .toLocaleString('sv-SE', { timeZone: CN_TZ })
-    .replace(/[- :\s]/g, '')
-    .slice(0, 14)
-}
-
-/** 从东财 day 字段取出日历日期 YYYY-MM-DD（支持 2024-01-15、20240115…） */
-function extractYmdDatePart(s) {
-  const t = String(s || '').trim()
-  const mDash = t.match(/^(\d{4}-\d{2}-\d{2})/)
-  if (mDash) return mDash[1]
-  const m8 = t.match(/^(\d{4})(\d{2})(\d{2})/)
-  if (m8) return `${m8[1]}-${m8[2]}-${m8[3]}`
-  return ''
-}
-
-/** 分钟 K 的 klt 与单根 K 线时长（秒）；用于 end 回推，避免只减 60s 与高周期重叠导致分页无增量 */
-function barSecondsForMinuteKlt(klt) {
-  const n = Number.parseInt(String(klt), 10)
-  if (Number.isFinite(n) && n > 0) return n * 60
-  return 60
-}
-
 /** 根据当前最旧一根 K 线的 day 字段生成东财 end 参数 */
 function formatEastMoneyEndFromOldest(oldestDayField, klt) {
   const s = String(oldestDayField || '').trim()
@@ -1637,6 +3261,47 @@ function disposeChart() {
   ind.macdHist = ind.macdDif = ind.macdDea = null
   ind.kdjK = ind.kdjD = ind.kdjJ = null
   ind.rsi = null
+  ind.atr = null
+  ind.vwap = null
+  ind.mfi = null
+  ind.kama = null
+  ind.keltnerU = ind.keltnerM = ind.keltnerL = null
+  ind.supertrend = null
+  ind.ema12 = ind.ema21 = null
+  ind.ichTenkan = ind.ichKijun = ind.ichSpanA = ind.ichSpanB = ind.ichChikou = null
+  ind.cci = null
+  ind.ttmHist = ind.ttmDots = null
+  ind.sar = null
+  ind.donchianU = ind.donchianM = ind.donchianL = null
+  ind.adx = ind.adxDiP = ind.adxDiM = null
+  ind.williamsR = null
+  ind.stochRsi = null
+  ind.stochRsiD = null
+  ind.cmf = null
+  ind.aroonUp = ind.aroonDown = null
+  ind.cmo = null
+  ind.forceIndex = null
+  ind.avgAmp5 = null
+  ind.avgAmp10 = null
+  ind.avgAmp20 = null
+  ind.pivotPP = ind.pivotS1 = ind.pivotS2 = ind.pivotR1 = ind.pivotR2 = null
+  ind.dema = null
+  ind.zigzag = null
+  ind.satsLine = null
+  ind.satsUpper = null
+  ind.satsLower = null
+  ind.smcSwingHigh = null
+  ind.smcSwingLow = null
+  ind.smcIntHigh = null
+  ind.smcIntLow = null
+  ind.smcBos = null
+  ind.smcChoch = null
+  ind.smcSwBos = null
+  ind.smcSwChoch = null
+  ind.smcFvgTop = null
+  ind.smcFvgBot = null
+  ind.smcObTop = null
+  ind.smcObBot = null
 }
 
 function scheduleLoadOlderDebounced() {
@@ -1738,6 +3403,7 @@ async function loadOlderHistory() {
     }
     lastOlderHistoryEndTried = ''
     mergedRawRows = merged
+    mergedRawRowsVersion.value++
     syncDefaultLatestPanelRow()
     withProgrammaticTimeRange(() => {
       applySeriesFromRaw()
@@ -1774,6 +3440,7 @@ async function refreshLatestPoll() {
     const list = Array.isArray(raw) ? raw : []
     if (!list.length) return
     mergedRawRows = mergeRefreshWithLatest(mergedRawRows, list)
+    mergedRawRowsVersion.value++
     syncDefaultLatestPanelRow()
     withProgrammaticTimeRange(() => applySeriesFromRaw())
   } catch {
@@ -1864,6 +3531,7 @@ async function loadData() {
   if (!props.code) {
     errorText.value = '未设置股票代码'
     mergedRawRows = []
+    mergedRawRowsVersion.value++
     syncDefaultLatestPanelRow()
     hasMoreOlder.value = true
     lastOlderHistoryEndTried = ''
@@ -1877,6 +3545,7 @@ async function loadData() {
   loading.value = true
   errorText.value = ''
   mergedRawRows = []
+  mergedRawRowsVersion.value++
   syncDefaultLatestPanelRow()
   hasMoreOlder.value = true
   lastOlderHistoryEndTried = ''
@@ -1894,11 +3563,12 @@ async function loadData() {
     const list = Array.isArray(raw) ? raw : []
     ensureChart()
     mergedRawRows = mergeKlineRows([], list)
+    mergedRawRowsVersion.value++
     syncDefaultLatestPanelRow()
     const { candles } = toSeriesData(mergedRawRows)
     if (!candles.length) {
       errorText.value =
-        '暂无 K 线数据（需东方财富或新浪支持的代码，如 600519.SH、000001.SZ）'
+        '暂无 K 线数据（如 600519.SH、000001.SZ、00700.HK、AAPL.US）'
       candleSeries?.setData([])
       volSeries?.setData([])
       syncIndicators()
@@ -1926,31 +3596,54 @@ function onSelectKlt(klt) {
   activeKlt.value = klt
 }
 
-function toggleMA() {
-  showMA.value = !showMA.value
-  syncIndicators()
-}
-function toggleBOLL() {
-  showBOLL.value = !showBOLL.value
-  syncIndicators()
-}
-function toggleOBV() {
-  showOBV.value = !showOBV.value
-  syncIndicators()
-}
-function toggleMACD() {
-  showMACD.value = !showMACD.value
-  syncIndicators()
-}
-function toggleKDJ() {
-  showKDJ.value = !showKDJ.value
-  syncIndicators()
-}
-function toggleRSI() {
-  showRSI.value = !showRSI.value
-  syncIndicators()
-}
-
+const toggleMA = makeToggle(showMA, syncIndicators)
+const toggleBOLL = makeToggle(showBOLL, syncIndicators)
+const toggleOBV = makeToggle(showOBV, syncIndicators)
+const toggleMACD = makeToggle(showMACD, syncIndicators)
+const toggleKDJ = makeToggle(showKDJ, syncIndicators)
+const toggleRSI = makeToggle(showRSI, syncIndicators)
+const toggleATR = makeToggle(showATR, syncIndicators)
+const toggleVWAP = makeToggle(showVWAP, syncIndicators)
+const toggleMFI = makeToggle(showMFI, syncIndicators)
+const toggleKAMA = makeToggle(showKAMA, syncIndicators)
+const toggleKeltner = makeToggle(showKeltner, syncIndicators)
+const toggleSupertrend = makeToggle(showSupertrend, syncIndicators)
+const toggleEMA = makeToggle(showEMA, syncIndicators)
+const toggleIchimoku = makeToggle(showIchimoku, syncIndicators)
+const toggleCCI = makeToggle(showCCI, syncIndicators)
+const toggleTTMSqueeze = makeToggle(showTTMSqueeze, syncIndicators)
+const toggleSAR = makeToggle(showSAR, syncIndicators)
+const toggleDonchian = makeToggle(showDonchian, syncIndicators)
+const toggleADX = makeToggle(showADX, syncIndicators)
+const toggleWilliamsR = makeToggle(showWilliamsR, syncIndicators)
+const toggleStochRSI = makeToggle(showStochRSI, syncIndicators)
+const toggleCMF = makeToggle(showCMF, syncIndicators)
+const toggleAroon = makeToggle(showAroon, syncIndicators)
+const toggleCMO = makeToggle(showCMO, syncIndicators)
+const toggleForceIndex = makeToggle(showForceIndex, syncIndicators)
+const togglePivot = makeToggle(showPivot, syncIndicators)
+const toggleDEMA = makeToggle(showDEMA, syncIndicators)
+const toggleZigZag = makeToggle(showZigZag, syncIndicators)
+const toggleSATS = makeToggle(showSATS, syncIndicators)
+const toggleAvgAmp = makeToggle(showAvgAmp, syncIndicators)
+const toggleAlligator = makeToggle(showAlligator, syncIndicators)
+const toggleAO = makeToggle(showAO, syncIndicators)
+const toggleHullMA = makeToggle(showHullMA, syncIndicators)
+const toggleAD = makeToggle(showAD, syncIndicators)
+const toggleTRIX = makeToggle(showTRIX, syncIndicators)
+const toggleROC = makeToggle(showROC, syncIndicators)
+const toggleFractal = makeToggle(showFractal, syncIndicators)
+const toggleCHOP = makeToggle(showCHOP, syncIndicators)
+const toggleElderRay = makeToggle(showElderRay, syncIndicators)
+const toggleChaikinOsc = makeToggle(showChaikinOsc, syncIndicators)
+const toggleVWAPBands = makeToggle(showVWAPBands, syncIndicators)
+const toggleMassIndex = makeToggle(showMassIndex, syncIndicators)
+const toggleUlcerIndex = makeToggle(showUlcerIndex, syncIndicators)
+const toggleCoppock = makeToggle(showCoppock, syncIndicators)
+const toggleTEMA = makeToggle(showTEMA, syncIndicators)
+const toggleSMI = makeToggle(showSMI, syncIndicators)
+const toggleSignalRatio = makeToggle(showSignalRatio, syncIndicators)
+const toggleSMC = makeToggle(showSMC, syncIndicators)
 let chipUpdateTimer = null
 
 function toggleChip() {
@@ -2160,174 +3853,422 @@ watch(showLongPosition, (newVal) => {
 
 <template>
   <div class="lw-kline-root" :class="{ 'lw-kline--dark': darkTheme }">
-    <NFlex vertical :size="8" class="lw-kline-stack">
-      <div class="lw-kline-toolbar">
-        <div class="lw-kline-toolbar__main">
-          <NFlex vertical :size="8">
-            <NFlex :size="6" wrap style="row-gap: 6px">
-              <NText depth="3" style="font-size: 12px; margin-right: 4px">周期</NText>
-              <NButton
-                v-for="it in INTERVALS"
-                :key="it.klt"
-                size="tiny"
-                :type="activeKlt === it.klt ? 'primary' : 'default'"
-                :secondary="activeKlt !== it.klt"
-                @click="onSelectKlt(it.klt)"
-              >
-                {{ it.label }}
-              </NButton>
-            </NFlex>
-            <NFlex :size="6" wrap style="row-gap: 6px; align-items: center">
-              <NText depth="3" style="font-size: 12px; margin-right: 4px">指标</NText>
-              <NButton
-                size="tiny"
-                :type="showMA ? 'primary' : 'default'"
-                :secondary="!showMA"
-                @click="toggleMA"
-              >
-                均线 MA5/10/20/60
-              </NButton>
-              <NButton
-                size="tiny"
-                :type="showBOLL ? 'primary' : 'default'"
-                :secondary="!showBOLL"
-                @click="toggleBOLL"
-              >
-                BOLL(20,2)
-              </NButton>
-              <NButton
-                size="tiny"
-                :type="showOBV ? 'primary' : 'default'"
-                :secondary="!showOBV"
-                @click="toggleOBV"
-              >
-                OBV
-              </NButton>
-              <NButton
-                size="tiny"
-                :type="showMACD ? 'primary' : 'default'"
-                :secondary="!showMACD"
-                @click="toggleMACD"
-              >
-                MACD(12,26,9)
-              </NButton>
-              <NButton
-                size="tiny"
-                :type="showKDJ ? 'primary' : 'default'"
-                :secondary="!showKDJ"
-                @click="toggleKDJ"
-              >
-                KDJ(9)
-              </NButton>
-              <NButton
-                size="tiny"
-                :type="showRSI ? 'primary' : 'default'"
-                :secondary="!showRSI"
-                @click="toggleRSI"
-              >
-                RSI(14)
-              </NButton>
-              <NButton
-                v-if="SHOW_CHIP_TOOLBAR_BUTTON"
-                size="tiny"
-                :type="showChip ? 'primary' : 'default'"
-                :secondary="!showChip"
-                @click="toggleChip"
-              >
-                筹码分布
-              </NButton>
-            </NFlex>
-            <NFlex :size="6" wrap style="row-gap: 6px; align-items: center">
-              <NText depth="3" style="font-size: 12px; margin-right: 4px">多单</NText>
-              <NButton
-                size="tiny"
-                :type="showLongPosition ? 'primary' : 'default'"
-                :secondary="!showLongPosition"
-                @click="toggleLongPosition"
-              >
-                价位线
-              </NButton>
-              <NInput
-                v-model:value="longEntryStr"
-                size="tiny"
-                placeholder="开仓"
-                style="width: 88px"
-                clearable
-                @focus="onLongPriceInputFocus('entry')"
-                @blur="onLongPriceInputBlur"
-              />
-              <NInput
-                v-model:value="longStopStr"
-                size="tiny"
-                placeholder="止损"
-                style="width: 88px"
-                clearable
-                @focus="onLongPriceInputFocus('stop')"
-                @blur="onLongPriceInputBlur"
-              />
-              <NInput
-                v-model:value="longTakeProfitStr"
-                size="tiny"
-                placeholder="止盈"
-                style="width: 88px"
-                clearable
-                @focus="onLongPriceInputFocus('takeProfit')"
-                @blur="onLongPriceInputBlur"
-              />
-              <NButton size="tiny" secondary @click="fillLongEntryFromLatestClose">
-                最新收盘
-              </NButton>
-              <NButton
-                size="tiny"
-                :type="longClickPickEnabled ? 'primary' : 'default'"
-                :secondary="!longClickPickEnabled"
-                @click="toggleLongClickPick"
-              >
-                设置价位线(预警)
-              </NButton>
-              <NButton
-                v-if="longClickPickEnabled"
-                size="tiny"
-                quaternary
-                @click="resetLongClickSequence"
-              >
-                重置点击顺序
-              </NButton>
-              <NText
-                v-if="longFocusChartHint"
-                depth="3"
-                class="lw-kline-longpos-focus-hint"
-              >
-                {{ longFocusChartHint }}
-              </NText>
-              <NText
-                v-if="longClickPickEnabled && showLongPosition"
-                depth="3"
-                class="lw-kline-longpos-click-hint"
-              >
-                在 K 线区（非成交量柱）点击纵轴位置：下一项 · {{ longClickNextLabel }} · 已显示的线可按住上下拖动
-              </NText>
-              <NText v-if="longPositionHint" depth="3" class="lw-kline-longpos-hint">
-                {{ longPositionHint }}
-              </NText>
-            </NFlex>
-            <NFlex align="center" :size="8" class="lw-kline-hint-row">
-              <NText depth="3" class="lw-kline-hint-text">
-                {{ stockName || code }} ·
-                {{ 
-                  realtimeIntervalMs > 0
-                    ? `每 ${Math.round(realtimeIntervalMs / 1000)} 秒刷新`
-                    : '切换周期后加载'
-                }}
-                · 按住拖动查看左侧历史时会自动加载更早 K 线
-                <span v-if="activeDataSource" class="lw-kline-source-tag" :class="{ 'lw-kline-source-tag--fallback': activeDataSource !== 'eastmoney' }">
-                  {{ activeDataSource === 'eastmoney' ? '东方财富' : activeDataSource === 'sina' ? '新浪财经' : activeDataSource === 'tencent' ? '腾讯财经' : activeDataSource === 'tdx' ? '通达信' : activeDataSource }}
-                </span>
-              </NText>
-              <NSpin v-if="loading || loadingHistory" size="small" />
-            </NFlex>
+    <div class="lw-kline-body">
+      <div class="lw-kline-sidebar">
+        <div class="lw-kline-sidebar__inner">
+          <NFlex vertical :size="6">
+            <div class="lw-kline-sidebar__section">
+              <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(239,68,68,0.08); border-radius: 4px; border-left: 3px solid #ef4444; color: #ef4444">📈趋势</NText>
+              <NFlex :size="4" wrap style="row-gap: 4px">
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showMA ? 'primary' : 'default'" :secondary="!showMA" @click="toggleMA">MA</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ma }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showEMA ? 'primary' : 'default'" :secondary="!showEMA" @click="toggleEMA">EMA</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ema }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showKAMA ? 'primary' : 'default'" :secondary="!showKAMA" @click="toggleKAMA">KAMA</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.kama }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showSupertrend ? 'primary' : 'default'" :secondary="!showSupertrend" @click="toggleSupertrend">STrend</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.supertrend }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showSAR ? 'primary' : 'default'" :secondary="!showSAR" @click="toggleSAR">SAR</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.sar }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showIchimoku ? 'primary' : 'default'" :secondary="!showIchimoku" @click="toggleIchimoku">Ichi</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ichimoku }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showAroon ? 'primary' : 'default'" :secondary="!showAroon" @click="toggleAroon">Aroon</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.aroon }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showDEMA ? 'primary' : 'default'" :secondary="!showDEMA" @click="toggleDEMA">DEMA</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.dema }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showSATS ? 'primary' : 'default'" :secondary="!showSATS" @click="toggleSATS">SATS</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.sats }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showAlligator ? 'primary' : 'default'" :secondary="!showAlligator" @click="toggleAlligator">Gator</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.alligator }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showHullMA ? 'primary' : 'default'" :secondary="!showHullMA" @click="toggleHullMA">Hull</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.hullMA }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showTEMA ? 'primary' : 'default'" :secondary="!showTEMA" @click="toggleTEMA">TEMA</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.tema }}</span>
+                </NTooltip>
+              </NFlex>
+            </div>
+            <div class="lw-kline-sidebar__section">
+              <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(245,158,11,0.08); border-radius: 4px; border-left: 3px solid #f59e0b; color: #d97706">🎢波动</NText>
+              <NFlex :size="4" wrap style="row-gap: 4px">
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showBOLL ? 'primary' : 'default'" :secondary="!showBOLL" @click="toggleBOLL">BOLL</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.boll }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showKeltner ? 'primary' : 'default'" :secondary="!showKeltner" @click="toggleKeltner">Kelt</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.keltner }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showDonchian ? 'primary' : 'default'" :secondary="!showDonchian" @click="toggleDonchian">Donch</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.donchian }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showATR ? 'primary' : 'default'" :secondary="!showATR" @click="toggleATR">ATR</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.atr }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showAvgAmp ? 'primary' : 'default'" :secondary="!showAvgAmp" @click="toggleAvgAmp">均幅</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.avgAmp }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showTTMSqueeze ? 'primary' : 'default'" :secondary="!showTTMSqueeze" @click="toggleTTMSqueeze">TTM</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ttmSqueeze }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showZigZag ? 'primary' : 'default'" :secondary="!showZigZag" @click="toggleZigZag">ZigZag</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.zigzag }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showFractal ? 'primary' : 'default'" :secondary="!showFractal" @click="toggleFractal">Fractal</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.fractal }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showMassIndex ? 'primary' : 'default'" :secondary="!showMassIndex" @click="toggleMassIndex">Mass</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.massIndex }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showSMC ? 'primary' : 'default'" :secondary="!showSMC" @click="toggleSMC">SMC</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.smc }}</span>
+                </NTooltip>
+              </NFlex>
+            </div>
+            <div class="lw-kline-sidebar__section">
+              <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(59,130,246,0.08); border-radius: 4px; border-left: 3px solid #3b82f6; color: #2563eb">💫动量</NText>
+              <NFlex :size="4" wrap style="row-gap: 4px">
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showMACD ? 'primary' : 'default'" :secondary="!showMACD" @click="toggleMACD">MACD</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.macd }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showKDJ ? 'primary' : 'default'" :secondary="!showKDJ" @click="toggleKDJ">KDJ</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.kdj }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showRSI ? 'primary' : 'default'" :secondary="!showRSI" @click="toggleRSI">RSI</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.rsi }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showCCI ? 'primary' : 'default'" :secondary="!showCCI" @click="toggleCCI">CCI</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.cci }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showWilliamsR ? 'primary' : 'default'" :secondary="!showWilliamsR" @click="toggleWilliamsR">W%R</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.williamsR }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showStochRSI ? 'primary' : 'default'" :secondary="!showStochRSI" @click="toggleStochRSI">SRSI</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.stochRsi }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showCMO ? 'primary' : 'default'" :secondary="!showCMO" @click="toggleCMO">CMO</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.cmo }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showAO ? 'primary' : 'default'" :secondary="!showAO" @click="toggleAO">AO</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ao }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showTRIX ? 'primary' : 'default'" :secondary="!showTRIX" @click="toggleTRIX">TRIX</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.trix }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showROC ? 'primary' : 'default'" :secondary="!showROC" @click="toggleROC">ROC</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.roc }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showSMI ? 'primary' : 'default'" :secondary="!showSMI" @click="toggleSMI">SMI</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.smi }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showCoppock ? 'primary' : 'default'" :secondary="!showCoppock" @click="toggleCoppock">Coppck</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.coppock }}</span>
+                </NTooltip>
+              </NFlex>
+            </div>
+            <div class="lw-kline-sidebar__section">
+              <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(16,185,129,0.08); border-radius: 4px; border-left: 3px solid #10b981; color: #059669">📊量价</NText>
+              <NFlex :size="4" wrap style="row-gap: 4px">
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showOBV ? 'primary' : 'default'" :secondary="!showOBV" @click="toggleOBV">OBV</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.obv }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showVWAP ? 'primary' : 'default'" :secondary="!showVWAP" @click="toggleVWAP">VWAP</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.vwap }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showMFI ? 'primary' : 'default'" :secondary="!showMFI" @click="toggleMFI">MFI</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.mfi }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showCMF ? 'primary' : 'default'" :secondary="!showCMF" @click="toggleCMF">CMF</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.cmf }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showForceIndex ? 'primary' : 'default'" :secondary="!showForceIndex" @click="toggleForceIndex">FI</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.forceIndex }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showAD ? 'primary' : 'default'" :secondary="!showAD" @click="toggleAD">A/D</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ad }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showChaikinOsc ? 'primary' : 'default'" :secondary="!showChaikinOsc" @click="toggleChaikinOsc">ChkOsc</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.chaikinOsc }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showVWAPBands ? 'primary' : 'default'" :secondary="!showVWAPBands" @click="toggleVWAPBands">VWBnd</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.vwapBands }}</span>
+                </NTooltip>
+              </NFlex>
+            </div>
+            <div class="lw-kline-sidebar__section">
+              <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(139,92,246,0.08); border-radius: 4px; border-left: 3px solid #8b5cf6; color: #7c3aed">📏强度</NText>
+              <NFlex :size="4" wrap style="row-gap: 4px">
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showADX ? 'primary' : 'default'" :secondary="!showADX" @click="toggleADX">ADX</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.adx }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showPivot ? 'primary' : 'default'" :secondary="!showPivot" @click="togglePivot">Pivot</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.pivot }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showCHOP ? 'primary' : 'default'" :secondary="!showCHOP" @click="toggleCHOP">CHOP</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.chop }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showElderRay ? 'primary' : 'default'" :secondary="!showElderRay" @click="toggleElderRay">Elder</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.elderRay }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showUlcerIndex ? 'primary' : 'default'" :secondary="!showUlcerIndex" @click="toggleUlcerIndex">Ulcer</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ulcerIndex }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showSignalRatio ? 'primary' : 'default'" :secondary="!showSignalRatio" @click="toggleSignalRatio">信号比</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.signalRatio }}</span>
+                </NTooltip>
+                <NButton
+                  v-if="SHOW_CHIP_TOOLBAR_BUTTON"
+                  size="tiny"
+                  :type="showChip ? 'primary' : 'default'"
+                  :secondary="!showChip"
+                  @click="toggleChip"
+                >
+                  筹码
+                </NButton>
+              </NFlex>
+            </div>
           </NFlex>
         </div>
+      </div>
+      <div class="lw-kline-main">
+        <NFlex :size="6" wrap style="row-gap: 4px; align-items: center">
+          <NText depth="3" style="font-size: 12px; margin-right: 2px">周期</NText>
+          <NButton
+            v-for="it in INTERVALS"
+            :key="it.klt"
+            size="tiny"
+            :type="activeKlt === it.klt ? 'primary' : 'default'"
+            :secondary="activeKlt !== it.klt"
+            @click="onSelectKlt(it.klt)"
+          >
+            {{ it.label }}
+          </NButton>
+          <span style="width: 12px" />
+          <NText depth="3" style="font-size: 12px; margin-right: 2px">多单</NText>
+          <NButton
+            size="tiny"
+            :type="showLongPosition ? 'primary' : 'default'"
+            :secondary="!showLongPosition"
+            @click="toggleLongPosition"
+          >
+            价位线
+          </NButton>
+          <NInput
+            v-model:value="longEntryStr"
+            size="tiny"
+            placeholder="开仓"
+            style="width: 80px"
+            clearable
+            @focus="onLongPriceInputFocus('entry')"
+            @blur="onLongPriceInputBlur"
+          />
+          <NInput
+            v-model:value="longStopStr"
+            size="tiny"
+            placeholder="止损"
+            style="width: 80px"
+            clearable
+            @focus="onLongPriceInputFocus('stop')"
+            @blur="onLongPriceInputBlur"
+          />
+          <NInput
+            v-model:value="longTakeProfitStr"
+            size="tiny"
+            placeholder="止盈"
+            style="width: 80px"
+            clearable
+            @focus="onLongPriceInputFocus('takeProfit')"
+            @blur="onLongPriceInputBlur"
+          />
+          <NButton size="tiny" secondary @click="fillLongEntryFromLatestClose">
+            最新收盘
+          </NButton>
+          <NButton
+            size="tiny"
+            :type="longClickPickEnabled ? 'primary' : 'default'"
+            :secondary="!longClickPickEnabled"
+            @click="toggleLongClickPick"
+          >
+            设置价位线
+          </NButton>
+          <NButton
+            v-if="longClickPickEnabled"
+            size="tiny"
+            quaternary
+            @click="resetLongClickSequence"
+          >
+            重置
+          </NButton>
+          <NText
+            v-if="longFocusChartHint"
+            depth="3"
+            class="lw-kline-longpos-focus-hint"
+          >
+            {{ longFocusChartHint }}
+          </NText>
+          <NText
+            v-if="longClickPickEnabled && showLongPosition"
+            depth="3"
+            class="lw-kline-longpos-click-hint"
+          >
+            点击K线设置{{ longClickNextLabel }}
+          </NText>
+          <NText v-if="longPositionHint" depth="3" class="lw-kline-longpos-hint">
+            {{ longPositionHint }}
+          </NText>
+        </NFlex>
         <div
           class="lw-kline-crosshair-strip"
           :class="{ 'lw-kline-crosshair-strip--dark': darkTheme }"
@@ -2392,9 +4333,33 @@ watch(showLongPosition, (newVal) => {
                 }}</span>
               </span>
               <span class="lw-kline-kv">
+                <span class="lw-kline-crosshair-strip__k">均幅5</span>
+                <span class="lw-kline-crosshair-strip__v" :style="{ color: crosshairPanel.cNeu }">{{
+                  crosshairPanel.avgAmp5
+                }}</span>
+              </span>
+              <span class="lw-kline-kv">
+                <span class="lw-kline-crosshair-strip__k">均幅10</span>
+                <span class="lw-kline-crosshair-strip__v" :style="{ color: crosshairPanel.cNeu }">{{
+                  crosshairPanel.avgAmp10
+                }}</span>
+              </span>
+              <span class="lw-kline-kv">
+                <span class="lw-kline-crosshair-strip__k">均幅20</span>
+                <span class="lw-kline-crosshair-strip__v" :style="{ color: crosshairPanel.cNeu }">{{
+                  crosshairPanel.avgAmp20
+                }}</span>
+              </span>
+              <span class="lw-kline-kv">
                 <span class="lw-kline-crosshair-strip__k">换手率</span>
                 <span class="lw-kline-crosshair-strip__v" :style="{ color: crosshairPanel.cNeu }">{{
                   crosshairPanel.turnoverRate
+                }}</span>
+              </span>
+              <span class="lw-kline-kv">
+                <span class="lw-kline-crosshair-strip__k">量比</span>
+                <span class="lw-kline-crosshair-strip__v" :style="{ color: crosshairPanel.cChg }">{{
+                  crosshairPanel.volumeRatio
                 }}</span>
               </span>
             </div>
@@ -2403,41 +4368,98 @@ watch(showLongPosition, (newVal) => {
             {{ loading ? '加载中…' : '暂无 K 线数据' }}
           </NText>
         </div>
-      </div>
-      <NText v-if="errorText" type="error" style="font-size: 12px">{{ errorText }}</NText>
-      <div class="lw-kline-chart-wrap" :style="{ minHeight: chartHeight + 'px' }">
         <div
-          ref="chartContainerRef"
-          class="lw-kline-chart"
-          :style="{ height: chartHeight + 'px', minHeight: chartHeight + 'px' }"
-        />
-        <div
-          v-if="showChip"
-          class="lw-chip"
-          :class="{ 'lw-chip--dark': darkTheme }"
-          :style="{ height: chartHeight + 'px', minHeight: chartHeight + 'px' }"
+          v-if="indicatorSignalSummary"
+          class="lw-kline-signal-summary"
+          :class="{ 'lw-kline-signal-summary--dark': darkTheme }"
         >
-          <div class="lw-chip__head">
-            <span class="lw-chip__title">筹码分布</span>
-            <span v-if="chipMeta.hoverDate" class="lw-chip__meta">
-              {{ chipMeta.hoverDate }}
+          <div class="lw-kline-signal-summary__head">
+            <span class="lw-kline-signal-summary__title">指标信号汇总</span>
+            <span class="lw-kline-signal-summary__total">共 {{ indicatorSignalSummary.total }} 项</span>
+          </div>
+          <div class="lw-kline-signal-summary__bar">
+            <div class="lw-kline-signal-summary__bar-seg lw-kline-signal-summary__bar-seg--bullish" :style="{ width: indicatorSignalSummary.bullishPct + '%' }"></div>
+            <div class="lw-kline-signal-summary__bar-seg lw-kline-signal-summary__bar-seg--bearish" :style="{ width: indicatorSignalSummary.bearishPct + '%' }"></div>
+            <div class="lw-kline-signal-summary__bar-seg lw-kline-signal-summary__bar-seg--oscillating" :style="{ width: indicatorSignalSummary.oscillatingPct + '%' }"></div>
+            <div class="lw-kline-signal-summary__bar-seg lw-kline-signal-summary__bar-seg--neutral" :style="{ width: indicatorSignalSummary.neutralPct + '%' }"></div>
+          </div>
+          <div class="lw-kline-signal-summary__legend">
+            <span class="lw-kline-signal-summary__legend-item">
+              <span class="lw-kline-signal-summary__dot lw-kline-signal-summary__dot--bullish"></span>
+              看多 {{ indicatorSignalSummary.bullish }} ({{ indicatorSignalSummary.bullishPct }}%)
             </span>
-            <span v-if="chipItems.length" class="lw-chip__meta">
-              均成本 {{ chipMeta.avgCost.toFixed(2) }} · 获利
-              {{ (chipMeta.profitRatio * 100).toFixed(1) }}%
+            <span class="lw-kline-signal-summary__legend-item">
+              <span class="lw-kline-signal-summary__dot lw-kline-signal-summary__dot--bearish"></span>
+              看空 {{ indicatorSignalSummary.bearish }} ({{ indicatorSignalSummary.bearishPct }}%)
+            </span>
+            <span class="lw-kline-signal-summary__legend-item">
+              <span class="lw-kline-signal-summary__dot lw-kline-signal-summary__dot--oscillating"></span>
+              震荡 {{ indicatorSignalSummary.oscillating }} ({{ indicatorSignalSummary.oscillatingPct }}%)
+            </span>
+            <span class="lw-kline-signal-summary__legend-item">
+              <span class="lw-kline-signal-summary__dot lw-kline-signal-summary__dot--neutral"></span>
+              中性 {{ indicatorSignalSummary.neutral }} ({{ indicatorSignalSummary.neutralPct }}%)
             </span>
           </div>
-          <div v-if="!chipItems.length" class="lw-chip__empty">
-            {{ mergedRawRows.length ? '移动鼠标到K线查看' : '暂无K线数据' }}
+          <div class="lw-kline-signal-summary__tags">
+            <span
+              v-for="s in indicatorSignalSummary.signals"
+              :key="s.name"
+              class="lw-kline-signal-summary__tag"
+              :class="'lw-kline-signal-summary__tag--' + s.signal"
+            >{{ s.name }}</span>
           </div>
-          <canvas
-            v-show="chipItems.length"
-            ref="chipCanvasRef"
-            class="lw-chip__canvas"
-          />
         </div>
+        <NText v-if="errorText" type="error" style="font-size: 12px">{{ errorText }}</NText>
+        <div class="lw-kline-chart-wrap">
+          <div
+            ref="chartContainerRef"
+            class="lw-kline-chart"
+            :style="{ height: chartHeight-110 + 'px', minHeight: chartHeight-110 + 'px' }"
+          />
+          <div
+            v-if="showChip"
+            class="lw-chip"
+            :class="{ 'lw-chip--dark': darkTheme }"
+            :style="{ height: chartHeight-110 + 'px', minHeight: chartHeight-110 + 'px' }"
+          >
+            <div class="lw-chip__head">
+              <span class="lw-chip__title">筹码分布</span>
+              <span v-if="chipMeta.hoverDate" class="lw-chip__meta">
+                {{ chipMeta.hoverDate }}
+              </span>
+              <span v-if="chipItems.length" class="lw-chip__meta">
+                均成本 {{ chipMeta.avgCost.toFixed(2) }} · 获利
+                {{ (chipMeta.profitRatio * 100).toFixed(1) }}%
+              </span>
+            </div>
+            <div v-if="!chipItems.length" class="lw-chip__empty">
+              {{ mergedRawRows.length ? '移动鼠标到K线查看' : '暂无K线数据' }}
+            </div>
+            <canvas
+              v-show="chipItems.length"
+              ref="chipCanvasRef"
+              class="lw-chip__canvas"
+            />
+          </div>
+        </div>
+        <NFlex align="center" :size="8" class="lw-kline-hint-row">
+          <NText depth="3" class="lw-kline-hint-text">
+            {{ stockName || code }} ·
+            {{ 
+              realtimeIntervalMs > 0
+                ? `每 ${Math.round(realtimeIntervalMs / 1000)} 秒刷新`
+                : '切换周期后加载'
+            }}
+            · 按住拖动查看左侧历史时会自动加载更早 K 线
+            <span v-if="activeDataSource" class="lw-kline-source-tag" :class="{ 'lw-kline-source-tag--fallback': activeDataSource !== 'eastmoney' && activeDataSource !== 'tdx-mac' && activeDataSource !== 'tdx-mac-ex' }">
+              {{ activeDataSource === 'eastmoney' ? '东方财富' : activeDataSource === 'tdx-mac' ? '通达信MAC' : activeDataSource === 'tdx-mac-ex' ? '通达信MAC扩展' : activeDataSource === 'sina' ? '新浪财经' : activeDataSource === 'tencent' ? '腾讯财经' : activeDataSource === 'tdx' ? '通达信' : activeDataSource }}
+            </span>
+          </NText>
+          <NSpin v-if="loading || loadingHistory" size="small" />
+        </NFlex>
       </div>
-    </NFlex>
+    </div>
   </div>
 </template>
 
@@ -2447,13 +4469,36 @@ watch(showLongPosition, (newVal) => {
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  overflow-x: hidden;
   --wails-draggable: no-drag;
 }
-.lw-kline-stack {
+.lw-kline-body {
+  display: flex;
   width: 100%;
-  max-width: 100%;
+  gap: 8px;
+  align-items: stretch;
+}
+.lw-kline-sidebar {
+  flex: 0 0 auto;
+  width: 140px;
+  min-width: 120px;
+}
+.lw-kline--dark .lw-kline-sidebar {
+  border-color: #3f3f46;
+}
+.lw-kline-sidebar__inner {
   min-width: 0;
+  position: sticky;
+  top: 0;
+}
+.lw-kline-sidebar__section {
+  margin-bottom: 6px;
+}
+.lw-kline-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .lw-kline-hint-row {
   min-width: 0;
@@ -2494,19 +4539,6 @@ watch(showLongPosition, (newVal) => {
 }
 .lw-kline--dark .lw-kline-longpos-focus-hint {
   color: #fbbf24;
-}
-/* 上下布局：避免右侧信息栏把弹窗顶高；宽度跟随弹窗不外扩 */
-.lw-kline-toolbar {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  min-width: 0;
-  max-width: 100%;
-}
-.lw-kline-toolbar__main {
-  min-width: 0;
-  max-width: 100%;
 }
 .lw-kline-crosshair-strip {
   width: 100%;
@@ -2666,5 +4698,135 @@ watch(showLongPosition, (newVal) => {
 .lw-kline--dark .lw-kline-source-tag--fallback {
   background: #422006;
   color: #fbbf24;
+}
+.lw-kline-signal-summary {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+.lw-kline-signal-summary--dark {
+  border-color: #3f3f46;
+  background: #18181b;
+}
+.lw-kline-signal-summary__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.lw-kline-signal-summary__title {
+  font-weight: 700;
+  font-size: 12px;
+  color: #0f172a;
+  white-space: nowrap;
+}
+.lw-kline-signal-summary--dark .lw-kline-signal-summary__title {
+  color: #f1f5f9;
+}
+.lw-kline-signal-summary__total {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+}
+.lw-kline-signal-summary--dark .lw-kline-signal-summary__total {
+  color: #94a3b8;
+}
+.lw-kline-signal-summary__bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #e2e8f0;
+  margin-bottom: 6px;
+}
+.lw-kline-signal-summary--dark .lw-kline-signal-summary__bar {
+  background: #3f3f46;
+}
+.lw-kline-signal-summary__bar-seg {
+  height: 100%;
+  min-width: 0;
+  transition: width 0.3s ease;
+}
+.lw-kline-signal-summary__bar-seg--bullish { background: #ef4444; }
+.lw-kline-signal-summary__bar-seg--bearish { background: #22c55e; }
+.lw-kline-signal-summary__bar-seg--oscillating { background: #f59e0b; }
+.lw-kline-signal-summary__bar-seg--neutral { background: #94a3b8; }
+.lw-kline-signal-summary__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: #334155;
+}
+.lw-kline-signal-summary--dark .lw-kline-signal-summary__legend {
+  color: #cbd5e1;
+}
+.lw-kline-signal-summary__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.lw-kline-signal-summary__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.lw-kline-signal-summary__dot--bullish { background: #ef4444; }
+.lw-kline-signal-summary__dot--bearish { background: #22c55e; }
+.lw-kline-signal-summary__dot--oscillating { background: #f59e0b; }
+.lw-kline-signal-summary__dot--neutral { background: #94a3b8; }
+.lw-kline-signal-summary__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.lw-kline-signal-summary__tag {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.lw-kline-signal-summary__tag--bullish {
+  background: #fef2f2;
+  color: #dc2626;
+}
+.lw-kline-signal-summary--dark .lw-kline-signal-summary__tag--bullish {
+  background: #450a0a;
+  color: #fca5a5;
+}
+.lw-kline-signal-summary__tag--bearish {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+.lw-kline-signal-summary--dark .lw-kline-signal-summary__tag--bearish {
+  background: #052e16;
+  color: #86efac;
+}
+.lw-kline-signal-summary__tag--oscillating {
+  background: #fffbeb;
+  color: #d97706;
+}
+.lw-kline-signal-summary--dark .lw-kline-signal-summary__tag--oscillating {
+  background: #451a03;
+  color: #fcd34d;
+}
+.lw-kline-signal-summary__tag--neutral {
+  background: #f1f5f9;
+  color: #475569;
+}
+.lw-kline-signal-summary--dark .lw-kline-signal-summary__tag--neutral {
+  background: #1e293b;
+  color: #94a3b8;
 }
 </style>

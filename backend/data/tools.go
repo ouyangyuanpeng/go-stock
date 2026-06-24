@@ -479,6 +479,25 @@ func Tools(tools []Tool) []Tool {
 	tools = append(tools, Tool{
 		Type: "function",
 		Function: ToolFunction{
+			Name:        "GetTdxSymbolBelongBoard",
+			Description: "通过通达信MAC接口获取股票所属板块信息，包括行业板块、概念板块等，以及板块涨跌幅、涨停/跌停家数等数据。支持一次查询多只，将并行请求后合并结果。",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"stockCode": map[string]any{
+						"type":        "string",
+						"description": "股票代码,如：600519.SH。注意 上海证券交易所股票以.SH结尾，深圳证券交易所股票以.SZ结尾，北交所股票以.BJ结尾，港股以.HK结尾。多只时可用英文逗号分隔。",
+					},
+					"stockCodes": toolSchemaStockCodes,
+				},
+				Required: []string{"stockCode"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
 			Name:        "GetTdxCompanyCategory",
 			Description: "通过通达信协议获取股票F10分类信息。不传category参数时返回所有可用分类名称列表；传入category参数时返回该分类的详细内容。可用分类包括：最新提示、公司概况、财务分析、股本结构、股东研究、机构持股、分红融资、高管治理、资金动向、资本运作、热点题材、公司公告、公司报道、经营分析、行业分析、研报评级。",
 			Parameters: &FunctionParameters{
@@ -1382,6 +1401,84 @@ func Tools(tools []Tool) []Tool {
 	tools = append(tools, Tool{
 		Type: "function",
 		Function: ToolFunction{
+			Name:        "GetFundKLine",
+			Description: "获取基金K线数据，支持多周期(日K/周K/月K/年K等)。场内基金(ETF/LOF)使用4层数据源fallback，场外基金从东方财富历史净值接口获取",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"fundCode": map[string]any{
+						"type":        "string",
+						"description": "基金代码，如 510050(场内ETF)、000001(场外基金)",
+					},
+					"klt": map[string]any{
+						"type":        "string",
+						"description": "K线周期: 101=日K, 102=周K, 103=月K, 104=年K",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "返回数据条数，默认100",
+					},
+				},
+				Required: []string{"fundCode"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetFundHistoryNetValue",
+			Description: "获取基金历史净值数据。场外基金从东方财富API获取，场内基金(ETF/LOF)从K线收盘价换算",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"fundCode": map[string]any{
+						"type":        "string",
+						"description": "基金代码，如 000001",
+					},
+					"pageIndex": map[string]any{
+						"type":        "integer",
+						"description": "页码，默认1",
+					},
+					"pageSize": map[string]any{
+						"type":        "integer",
+						"description": "每页条数，默认20",
+					},
+					"startDate": map[string]any{
+						"type":        "string",
+						"description": "开始日期，格式 YYYY-MM-DD",
+					},
+					"endDate": map[string]any{
+						"type":        "string",
+						"description": "结束日期，格式 YYYY-MM-DD",
+					},
+				},
+				Required: []string{"fundCode"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
+			Name:        "GetFundTop10Holdings",
+			Description: "获取基金前十大重仓持股信息，包括股票代码、名称、持仓占比、实时股价和涨跌幅",
+			Parameters: &FunctionParameters{
+				Type: "object",
+				Properties: map[string]any{
+					"fundCode": map[string]any{
+						"type":        "string",
+						"description": "基金代码，如 000001",
+					},
+				},
+				Required: []string{"fundCode"},
+			},
+		},
+	})
+
+	tools = append(tools, Tool{
+		Type: "function",
+		Function: ToolFunction{
 			Name:        "QueryIwencai",
 			Description: "同花顺问财行情数据查询。支持自然语言查询股票、ETF、指数等实时价格、涨跌幅、成交量、技术指标等行情数据。",
 			Parameters: &FunctionParameters{
@@ -2112,6 +2209,9 @@ func Tools(tools []Tool) []Tool {
 
 	tools = appendAgentParityTools(tools)
 
+	// 根据 API Key 配置过滤工具，未配置对应 Key 的工具不注册
+	tools = FilterToolsByApiKey(tools)
+
 	return tools
 }
 
@@ -2152,6 +2252,7 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"GetTdxFinanceInfo":           dataToolGroupStockAnalysis,
 	"GetTdxXDXRInfo":              dataToolGroupStockAnalysis,
 	"GetTdxCompanyCategory":       dataToolGroupStockAnalysis,
+	"GetTdxSymbolBelongBoard":     dataToolGroupStockAnalysis,
 	"GetStockLatestFinance":       dataToolGroupStockAnalysis,
 	"GetStockQtrMainFinance":      dataToolGroupStockAnalysis,
 	"GetStockOrgPredict":          dataToolGroupStockAnalysis,
@@ -2248,12 +2349,15 @@ var dataToolGroupMap = map[string]dataToolGroup{
 	"GetAIAnalysisHistory":         dataToolGroupAIAnalysis,
 	"GetAIAnalysisDetail":          dataToolGroupAIAnalysis,
 
-	"SetTradingPrice":     dataToolGroupOperations,
-	"SendDingDingMessage": dataToolGroupOperations,
-	"SendToDingDing":      dataToolGroupOperations,
-	"SearchFund":          dataToolGroupOperations,
-	"GetFundInfo":         dataToolGroupOperations,
-	"GetEconomicData":     dataToolGroupOperations,
+	"SetTradingPrice":        dataToolGroupOperations,
+	"SendDingDingMessage":    dataToolGroupOperations,
+	"SendToDingDing":         dataToolGroupOperations,
+	"SearchFund":             dataToolGroupOperations,
+	"GetFundInfo":            dataToolGroupOperations,
+	"GetFundKLine":           dataToolGroupOperations,
+	"GetFundHistoryNetValue": dataToolGroupOperations,
+	"GetFundTop10Holdings":   dataToolGroupOperations,
+	"GetEconomicData":        dataToolGroupOperations,
 }
 
 type dataToolGroupKeywords struct {

@@ -72,7 +72,7 @@ function addAiConfig() {
     timeOut: 6000,
     httpProxy:"",
     httpProxyEnabled:false,
-    thinking: false,
+    thinking: true,
   }));
 }
 
@@ -287,21 +287,20 @@ function saveConfig() {
 
   if (config.sponsorCode) {
     CheckSponsorCode(config.sponsorCode).then(res => {
-      if (res.code) {
-        UpdateConfig(config).then(res => {
-          message.success(res)
-          EventsEmit("updateSettings", config);
-        })
-      } else {
-        message.error(res.msg)
+      if (!res.code) {
+        message.warning(res.msg || '赞助码验证失败')
       }
     })
-  } else {
-    UpdateConfig(config).then(res => {
-      message.success(res)
-      EventsEmit("updateSettings", config);
-    })
   }
+
+  UpdateConfig(config).then(res => {
+    if (res === '保存成功！') {
+      message.success(res)
+    } else {
+      message.error(res)
+    }
+    EventsEmit("updateSettings", config);
+  })
 }
 
 
@@ -484,12 +483,12 @@ function deletePrompt(ID) {
             <n-form-item-gi :span="10" label="浏览器安装路径：" path="browserPath">
               <n-input type="text" placeholder="浏览器安装路径" v-model:value="formValue.browserPath" clearable/>
             </n-form-item-gi>
-<!--            <n-form-item-gi :span="3" label="指数基金：" path="enableFund">
+           <n-form-item-gi :span="3" label="指数基金：" path="enableFund">
               <n-switch v-model:value="formValue.enableFund"/>
             </n-form-item-gi>
-            <n-form-item-gi :span="3" label="AI智能体：" path="enableAgent">
-              <n-switch v-model:value="formValue.enableAgent"/>
-            </n-form-item-gi>-->
+            <!--      <n-form-item-gi :span="3" label="AI智能体：" path="enableAgent">
+                   <n-switch v-model:value="formValue.enableAgent"/>
+                 </n-form-item-gi>-->
             <n-form-item-gi :span="11" label="东财唯一标识：" path="qgqpBId">
               <n-input type="text" placeholder="东财唯一标识" v-model:value="formValue.qgqpBId" clearable/>
               <n-tooltip placement="top">
@@ -524,7 +523,7 @@ function deletePrompt(ID) {
                   <div style="max-width: 400px;text-align: left">
                     获取方法：<br>
                     访问同花顺问财开放平台：<br>
-                    <a href="https://open.iwencai.com" target="_blank" style="color: #63e2b7">https://open.iwencai.com</a><br>
+                    <a href="https://open.iwencai.com" target="_blank" style="color: #63e2b7">https://www.iwencai.com/skillhub</a><br>
                     注册并登录后，在控制台获取API Key。<br>
                     配置后可使用问财智能选股、行情查询、研报搜索等功能。
                   </div>
@@ -545,7 +544,8 @@ function deletePrompt(ID) {
                   <n-gradient-text :type="'warning'">
                   <div style="max-width: 400px;text-align: left">
                     获取方法：<br>
-                    访问东方财富妙想AI平台获取API Key。<br>
+                    访问东方财富妙想AI平台获取API Key。
+                    https://ai.eastmoney.com/mxClaw<br>
                     配置后可使用个股业绩点评功能。
                   </div>
                   </n-gradient-text>

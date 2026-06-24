@@ -210,6 +210,14 @@ export function GetAiRecommendStocksList(arg1) {
   return window['go']['main']['App']['GetAiRecommendStocksList'](arg1);
 }
 
+export function GetAllBKCodes() {
+  return window['go']['main']['App']['GetAllBKCodes']();
+}
+
+export function GetAllConceptCodes() {
+  return window['go']['main']['App']['GetAllConceptCodes']();
+}
+
 export function GetAllConcepts() {
   return window['go']['main']['App']['GetAllConcepts']();
 }
@@ -250,6 +258,22 @@ export function GetAllStocks(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetAllStocks'](arg1, arg2, arg3, arg4);
 }
 
+export function GetBKFundFlowList(arg1, arg2) {
+  return window['go']['main']['App']['GetBKFundFlowList'](arg1, arg2);
+}
+
+export function GetBKFundFlowListByDate(arg1, arg2) {
+  return window['go']['main']['App']['GetBKFundFlowListByDate'](arg1, arg2);
+}
+
+export function GetBKFundFlowTopList(arg1) {
+  return window['go']['main']['App']['GetBKFundFlowTopList'](arg1);
+}
+
+export function GetBKFundFlowTopListByDate(arg1, arg2) {
+  return window['go']['main']['App']['GetBKFundFlowTopListByDate'](arg1, arg2);
+}
+
 export function GetChangeRank(arg1, arg2) {
   return window['go']['main']['App']['GetChangeRank'](arg1, arg2);
 }
@@ -260,6 +284,22 @@ export function GetChangeTypeDailyStats(arg1) {
 
 export function GetChipDistribution(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetChipDistribution'](arg1, arg2, arg3, arg4);
+}
+
+export function GetConceptFundFlowList(arg1, arg2) {
+  return window['go']['main']['App']['GetConceptFundFlowList'](arg1, arg2);
+}
+
+export function GetConceptFundFlowListByDate(arg1, arg2) {
+  return window['go']['main']['App']['GetConceptFundFlowListByDate'](arg1, arg2);
+}
+
+export function GetConceptFundFlowTopList(arg1) {
+  return window['go']['main']['App']['GetConceptFundFlowTopList'](arg1);
+}
+
+export function GetConceptFundFlowTopListByDate(arg1, arg2) {
+  return window['go']['main']['App']['GetConceptFundFlowTopListByDate'](arg1, arg2);
 }
 
 export function GetConfig() {
@@ -300,6 +340,26 @@ export function GetFollowList(arg1) {
 
 export function GetFollowedFund() {
   return window['go']['main']['App']['GetFollowedFund']();
+}
+
+export function GetFollowedFundPaged(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetFollowedFundPaged'](arg1, arg2, arg3);
+}
+
+export function GetFundHistoryNetValue(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GetFundHistoryNetValue'](arg1, arg2, arg3, arg4);
+}
+
+export function GetFundKLine(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetFundKLine'](arg1, arg2, arg3);
+}
+
+export function GetFundRanking(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['GetFundRanking'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function GetFundTop10Holdings(arg1) {
+  return window['go']['main']['App']['GetFundTop10Holdings'](arg1);
 }
 
 export function GetGroupList() {
@@ -442,6 +502,10 @@ export function GetTdxFinanceInfo(arg1) {
   return window['go']['main']['App']['GetTdxFinanceInfo'](arg1);
 }
 
+export function GetTdxSymbolBelongBoard(arg1) {
+  return window['go']['main']['App']['GetTdxSymbolBelongBoard'](arg1);
+}
+
 export function GetTdxXDXRInfo(arg1) {
   return window['go']['main']['App']['GetTdxXDXRInfo'](arg1);
 }
@@ -582,6 +646,10 @@ export function RemoveStockGroup(arg1, arg2, arg3) {
   return window['go']['main']['App']['RemoveStockGroup'](arg1, arg2, arg3);
 }
 
+export function RestartAsAdmin() {
+  return window['go']['main']['App']['RestartAsAdmin']();
+}
+
 export function SaveAIResponseResult(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['SaveAIResponseResult'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
@@ -612,6 +680,10 @@ export function SaveWordFile(arg1, arg2) {
 
 export function SearchCronTasks(arg1) {
   return window['go']['main']['App']['SearchCronTasks'](arg1);
+}
+
+export function SearchFundCodes(arg1) {
+  return window['go']['main']['App']['SearchFundCodes'](arg1);
 }
 
 export function SearchStock(arg1) {

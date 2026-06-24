@@ -22,6 +22,7 @@ import {
   OpenURL,
   RemoveGroup,
   RemoveStockGroup,
+  RestartAsAdmin,
   SaveAIResponseResult,
   SaveAsMarkdown,
   SaveImage,
@@ -97,6 +98,7 @@ const handleProgress = (progress) => {
 const enableEditor = ref(false)
 const mdPreviewRef = ref(null)
 const mdEditorRef = ref(null)
+const aiResultScrollRef = ref(null)
 const tipsRef = ref(null)
 const message = useMessage()
 const notify = useNotification()
@@ -126,7 +128,7 @@ const vipLevel = ref(0)
 const klineAutoCloseTimer = ref(null)
 const addBTN = ref(true)
 const enableTools = ref(true)
-const thinkingMode = ref(false)
+const thinkingMode = ref(true)
 const formModel = ref({
   name: "",
   code: "",
@@ -160,11 +162,13 @@ const data = reactive({
   airesult: "",
   openAiEnable: false,
   loading: true,
+  analysisStatus: "",
   enableDanmu: false,
   darkTheme: false,
   changePercent: 0
 })
 const feishiInterval = ref(null)
+const aiAnalysisTimeout = ref(null)
 
 
 const currentGroupId = ref(0)
@@ -314,22 +318,17 @@ function handleTabDragEnd(event) {
 onBeforeMount(() => {
   GetGroupList().then(result => {
     groupList.value = result
-    // 检查是否存在相同的序号
     const sorts = result.map(item => item.sort);
     const uniqueSorts = new Set(sorts);
-    // 如果存在重复的序号，则重新初始化序号
     if (sorts.length !== uniqueSorts.size) {
-      // 调用InitializeGroupSort重新初始化序号
-      // 然后重新获取分组列表
       fetchGroupList();
     } else {
-      // 没有重复序号，继续正常流程
       if (route.query.groupId) {
         message.success("切换分组:" + route.query.groupName)
         currentGroupId.value = Number(route.query.groupId)
       }
     }
-  })
+  }).catch(err => { console.error("GetGroupList error:", err) })
   GetStockList("").then(result => {
     stockList.value = result
     options.value = result.map(item => {
@@ -338,7 +337,7 @@ onBeforeMount(() => {
         value: item.ts_code
       }
     })
-  })
+  }).catch(err => { console.error("GetStockList error:", err) })
   GetConfig().then(result => {
     if (result.openAiEnable) {
       data.openAiEnable = true
@@ -349,19 +348,21 @@ onBeforeMount(() => {
     if (result.darkTheme) {
       data.darkTheme = true
     }
-  })
+  }).catch(err => { console.error("GetConfig error:", err) })
   GetPromptTemplates("", "").then(res => {
     promptTemplates.value = res
 
     sysPromptOptions.value = promptTemplates.value.filter(item => item.type === '模型系统Prompt')
     userPromptOptions.value = promptTemplates.value.filter(item => item.type === '模型用户Prompt')
 
-  })
+  }).catch(err => { console.error("GetPromptTemplates error:", err) })
 
   GetAiConfigs().then(res => {
     aiConfigs.value = res
-    data.aiConfigId = res[0].ID
-  })
+    if (res && res.length > 0) {
+      data.aiConfigId = res[0].ID
+    }
+  }).catch(err => { console.error("GetAiConfigs error:", err) })
 
   EventsOn("loadingDone", (data) => {
     message.loading("刷新股票基础数据...")
@@ -394,18 +395,36 @@ onBeforeMount(() => {
   })
 
   EventsOn("newChatStream", async (msg) => {
-    data.loading = false
     if (msg === "DONE") {
+      // 清除超时定时器
+      if (aiAnalysisTimeout.value) {
+        clearTimeout(aiAnalysisTimeout.value)
+        aiAnalysisTimeout.value = null
+      }
       SaveAIResponseResult(data.code, data.name, data.airesult, data.chatId, data.question, data.aiConfigId)
-      message.info("AI分析完成！")
-      message.destroyAll()
       data.loading = false
+      data.analysisStatus = "分析完成"
+      message.destroyAll()
+      notify.success({
+        title: 'AI分析完成',
+        content: `[${data.name}] 分析已完成`,
+        duration: 3000,
+      })
+      setTimeout(() => {
+        data.analysisStatus = ""
+      }, 3000)
     } else {
       if (msg.chatId) {
         data.chatId = msg.chatId
       }
       if (msg.question) {
         data.question = msg.question
+      }
+      if (msg.content || msg.reasoning_content || msg.extraContent) {
+        if (!data.airesult) {
+          data.analysisStatus = "AI正在分析中..."
+        }
+        data.loading = false
       }
       if (msg.content) {
         data.airesult = data.airesult + msg.content
@@ -416,7 +435,6 @@ onBeforeMount(() => {
       if (msg.extraContent) {
         data.airesult = data.airesult + msg.extraContent
       }
-      data.loading= true
       scrollToAiResultBottom()
     }
   })
@@ -431,20 +449,15 @@ onBeforeMount(() => {
 
   EventsOn("updateVersion", async (msg) => {
     const githubTimeStr = msg.published_at;
-    // 创建一个 Date 对象
     const utcDate = new Date(githubTimeStr);
-// 获取本地时间
     const date = new Date(utcDate.getTime());
     const year = date.getFullYear();
-// getMonth 返回值是 0 - 11，所以要加 1
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     const hours = String(date.getHours()).padStart(2, '0');
     const minutes = String(date.getMinutes()).padStart(2, '0');
     const seconds = String(date.getSeconds()).padStart(2, '0');
-
     const formattedDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-
     notify.info({
       avatar: () =>
           h(NAvatar, {
@@ -454,7 +467,6 @@ onBeforeMount(() => {
           }),
       title: '发现新版本: ' + msg.tag_name,
       content: () => {
-        //return h(MdPreview, {theme:'dark',modelValue:msg.commit?.message}, null)
         return h('div', {
           style: {
             'text-align': 'left',
@@ -480,6 +492,36 @@ onBeforeMount(() => {
             })
           }
         }, {default: () => '查看'})
+      }
+    })
+  })
+
+  EventsOn("updateNeedAdmin", (msg) => {
+    notify.warning({
+      avatar: () =>
+          h(NAvatar, {
+            size: 'small',
+            round: false,
+            src: icon.value
+          }),
+      title: '更新需要管理员权限',
+      content: () => {
+        return h('div', {
+          style: {
+            'text-align': 'left',
+            'font-size': '14px',
+          }
+        }, { default: () => '新版本 ' + (msg.version || '') + ' 下载完成，但自动替换文件需要管理员权限。请以管理员身份重启程序后再次检查更新。' })
+      },
+      duration: 15000,
+      action: () => {
+        return h(NButton, {
+          type: 'warning',
+          size: 'small',
+          onClick: () => {
+            RestartAsAdmin()
+          }
+        }, { default: () => '以管理员身份重启' })
       }
     })
   })
@@ -622,6 +664,11 @@ onBeforeUnmount(() => {
   message.destroyAll()
   notify.destroyAll()
   clearInterval(feishiInterval.value)
+  // 清理 AI 分析超时定时器
+  if (aiAnalysisTimeout.value) {
+    clearTimeout(aiAnalysisTimeout.value)
+    aiAnalysisTimeout.value = null
+  }
   // 清理多周期 K 线自动关闭定时器
   if (klineAutoCloseTimer.value) {
     clearTimeout(klineAutoCloseTimer.value)
@@ -635,6 +682,7 @@ onBeforeUnmount(() => {
   EventsOff("newChatStream")
   EventsOff("changeTab")
   EventsOff("updateVersion")
+  EventsOff("updateNeedAdmin")
   EventsOff("warnMsg")
   EventsOff("loadingDone")
 
@@ -1592,13 +1640,14 @@ function showMoney(code, name) {
 function toEastMoneyCode(code) {
   if (!code) return ''
   const c = String(code).trim()
-  if (c.toLowerCase().startsWith('gb_')) return ''
-  if (/\.(SH|SZ|BJ|HK|SS)$/i.test(c)) return c.toUpperCase()
+  if (/\.(SH|SZ|BJ|HK|US|SS)$/i.test(c)) return c.toUpperCase()
   const lower = c.toLowerCase()
   if (lower.startsWith('sh')) return lower.slice(2) + '.SH'
   if (lower.startsWith('sz')) return lower.slice(2) + '.SZ'
   if (lower.startsWith('bj')) return lower.slice(2) + '.BJ'
   if (lower.startsWith('hk')) return lower.slice(2).toUpperCase() + '.HK'
+  if (lower.startsWith('us')) return lower.slice(2).toUpperCase() + '.US'
+  if (lower.startsWith('gb_')) return lower.slice(3).toUpperCase() + '.US'
   if (/^\d+$/.test(c)) {
     const d = c[0]
     if (d === '6') return c + '.SH'
@@ -1606,7 +1655,9 @@ function toEastMoneyCode(code) {
     if (d === '8' || d === '9') return c + '.BJ'
     return c + '.SZ'
   }
-  return c.toUpperCase()
+  // 纯字母代码视为美股（如 AAPL → AAPL.US）
+  if (/^[a-zA-Z]+$/.test(c)) return c.toUpperCase() + '.US'
+  return ''
 }
 
 /** 东方财富格式转回应用内部代码格式（如 000001.SZ → sh000001） */
@@ -1617,6 +1668,7 @@ function fromEastMoneyCode(emCode) {
   if (c.endsWith('.SZ')) return 'sz' + c.slice(0, -3)
   if (c.endsWith('.BJ')) return 'bj' + c.slice(0, -3)
   if (c.endsWith('.HK')) return 'hk' + c.slice(0, -3).toLowerCase()
+  if (c.endsWith('.US')) return 'us' + c.slice(0, -3).toLowerCase()
   return c.toLowerCase()
 }
 
@@ -1634,7 +1686,7 @@ async function refreshEffectiveVip() {
 async function showLightweightKline(code, name) {
   const em = toEastMoneyCode(code)
   if (!em) {
-    message.warning('当前代码暂不支持东方财富多周期K线（美股等请使用「日K」图）')
+    message.warning('当前代码暂不支持K线图')
     return
   }
   lwKlineCode.value = em
@@ -1864,6 +1916,15 @@ function checkPriceLineAlerts(result) {
 }
 
 function aiReCheckStock(stock, stockCode) {
+  if (!data.aiConfigId) {
+    message.error("请先选择AI模型配置")
+    return
+  }
+  // 清除之前的超时定时器
+  if (aiAnalysisTimeout.value) {
+    clearTimeout(aiAnalysisTimeout.value)
+    aiAnalysisTimeout.value = null
+  }
   data.modelName = ""
   data.airesult = ""
   data.time = ""
@@ -1871,6 +1932,7 @@ function aiReCheckStock(stock, stockCode) {
   data.code = stockCode
   data.loading = true
   modalShow4.value = true
+  data.analysisStatus = "正在连接AI服务..."
   message.loading("ai检测中...", {
     duration: 0,
   })
@@ -1878,6 +1940,28 @@ function aiReCheckStock(stock, stockCode) {
 
   //message.info("sysPromptId:"+data.sysPromptId)
   NewChatStream(stock, stockCode, data.question, data.aiConfigId, data.sysPromptId, enableTools.value,thinkingMode.value)
+    .catch(err => {
+      data.loading = false
+      data.analysisStatus = ""
+      message.destroyAll()
+      const errMsg = err?.message || err || "未知错误"
+      message.error("AI分析请求失败: " + errMsg)
+      data.airesult = "❌ AI分析请求失败: " + errMsg
+    })
+
+  // 设置超时兜底（5分钟）
+  aiAnalysisTimeout.value = setTimeout(() => {
+    if (data.loading) {
+      data.loading = false
+      data.analysisStatus = ""
+      message.destroyAll()
+      message.error("AI分析超时，请检查网络连接或AI服务配置")
+      if (!data.airesult) {
+        data.airesult = "❌ AI分析超时，请检查网络连接或AI服务配置是否正确。"
+      }
+    }
+    aiAnalysisTimeout.value = null
+  }, 5 * 60 * 1000)
 }
 
 function aiCheckStock(stock, stockCode) {
@@ -2036,15 +2120,12 @@ async function copyToClipboard() {
 
 function scrollToAiResultBottom() {
   nextTick(() => {
-    const previewEl = mdPreviewRef.value?.$el || mdEditorRef.value?.$el
-    if (previewEl) {
-      const scrollContainer = previewEl.querySelector('.md-editor-preview-wrapper') || 
-                               previewEl.querySelector('.md-editor-preview') ||
-                               previewEl
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight
+    requestAnimationFrame(() => {
+      const el = aiResultScrollRef.value
+      if (el) {
+        el.scrollTop = el.scrollHeight
       }
-    }
+    })
   })
 }
 
@@ -2724,7 +2805,7 @@ watch(modalShow6, (newVal) => {
 
   <n-modal transform-origin="center" v-model:show="modalShow4" preset="card" style="width: 800px;max-width: calc(100vw - 32px);"
            :title="'['+data.name+']AI分析'">
-    <n-spin size="small" :show="data.loading">
+    <n-spin size="small" :show="data.loading && !data.airesult">
       <MdEditor v-if="enableEditor" :toolbars="toolbars" ref="mdEditorRef" style="height: 440px;max-height: 60vh;text-align: left"
                 :modelValue="data.airesult" :theme="theme">
         <template #defToolbars>
@@ -2732,8 +2813,9 @@ watch(modalShow6, (newVal) => {
                      :modelValue="data.airesult" @onProgress="handleProgress"/>
         </template>
       </MdEditor>
-      <MdPreview v-if="!enableEditor" ref="mdPreviewRef" style="height: 440px;max-height: 60vh;text-align: left;overflow-y: auto;"
-                 :modelValue="data.airesult" :theme="theme"/>
+      <div v-if="!enableEditor" ref="aiResultScrollRef" style="height: 440px;max-height: 60vh;text-align: left;overflow-y: auto;">
+        <MdPreview ref="mdPreviewRef" :modelValue="data.airesult" :theme="theme"/>
+      </div>
     </n-spin>
     <template #footer>
       <n-flex justify="space-between" ref="tipsRef">
@@ -2743,6 +2825,7 @@ watch(modalShow6, (newVal) => {
           </n-tag>
           {{ data.time }}
         </n-text>
+        <n-text type="success" v-if="data.analysisStatus">{{ data.analysisStatus }}</n-text>
         <n-text type="error">*AI分析结果仅供参考，请以实际行情为准。投资需谨慎，风险自担。</n-text>
       </n-flex>
     </template>

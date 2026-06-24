@@ -26,6 +26,7 @@ import {
   SettingsOutline, ServerOutline, Skull, SkullOutline, SkullSharp,
   SparklesOutline, FlashOutline, Star,
   StarOutline,
+  StatsChartOutline,
   Wallet, WarningOutline, TimeOutline, SearchOutline,
 } from '@vicons/ionicons5'
 import {AnalyzeSentiment, GetConfig, GetGroupList, GetVersionInfo, IsTradingTime, IsHKTradingTime, IsUSTradingTime} from "../wailsjs/go/main/App";
@@ -296,6 +297,50 @@ const menuOptions = ref([
                   to: {
                     name: 'market',
                     query: {
+                      name: "板块资金流向",
+                    }
+                  },
+                  onClick: () => {
+                    activeKey.value = 'market'
+                    EventsEmit("changeMarketTab", {ID: 0, name: '板块资金流向'})
+                  },
+                },
+                {default: () => '板块资金流向',}
+            ),
+        key: 'market5_1',
+        icon: renderIcon(ReportMoney),
+      },
+      {
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  href: '#',
+                  to: {
+                    name: 'market',
+                    query: {
+                      name: "概念资金流向",
+                    }
+                  },
+                  onClick: () => {
+                    activeKey.value = 'market'
+                    EventsEmit("changeMarketTab", {ID: 0, name: '概念资金流向'})
+                  },
+                },
+                {default: () => '概念资金流向',}
+            ),
+        key: 'market5_2',
+        icon: renderIcon(TrendingUp),
+      },
+      {
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  href: '#',
+                  to: {
+                    name: 'market',
+                    query: {
                       name: "龙虎榜",
                     }
                   },
@@ -427,6 +472,23 @@ const menuOptions = ref([
             RouterLink,
             {
               to: {
+                name: 'klineAnalysis',
+              },
+              onClick: () => {
+                activeKey.value = 'klineAnalysis'
+              },
+            },
+            {default: () => 'K线分析'}
+        ),
+    key: 'klineAnalysis',
+    icon: renderIcon(StatsChartOutline),
+  },
+  {
+    label: () =>
+        h(
+            RouterLink,
+            {
+              to: {
                 name: 'fund',
                 query: {
                   name: '基金自选',
@@ -443,10 +505,36 @@ const menuOptions = ref([
     icon: renderIcon(SparklesOutline),
     children: [
       {
-        label: () => h(NText, {type: realtimeProfit.value > 0 ? 'error' : 'success'}, {default: () => '功能完善中！'}),
-        key: 'realtimeProfit',
-        show: realtimeProfit.value,
-        icon: renderIcon(AlarmOutline),
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  to: {name: 'fund', query: {name: '基金自选'}},
+                  onClick: () => {
+                    activeKey.value = 'fund'
+                    EventsEmit("changeFundTab", {name: '基金自选'})
+                  },
+                },
+                {default: () => '基金自选'}
+            ),
+        key: 'fundFollow',
+        icon: renderIcon(StarOutline),
+      },
+      {
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  to: {name: 'fund', query: {name: '基金排行'}},
+                  onClick: () => {
+                    activeKey.value = 'fund'
+                    EventsEmit("changeFundTab", {name: '基金排行'})
+                  },
+                },
+                {default: () => '基金排行'}
+            ),
+        key: 'fundRanking',
+        icon: renderIcon(TrendingUp),
       },
     ]
   },
@@ -829,6 +917,7 @@ const menuOptions = ref([
         ),
     key: 'about',
     icon: renderIcon(LogoGithub),
+    show: true,
   },
   {
     show:false,
@@ -919,6 +1008,14 @@ EventsOn("loadingMsg", (data) => {
   }
 })
 
+setTimeout(() => {
+  if (loading.value) {
+    loading.value = false
+    loadingMsg.value = "加载完成..."
+    EventsEmit("loadingDone", "app")
+  }
+}, 8000)
+
 onBeforeUnmount(() => {
   if (marketStatusTimer) {
     clearInterval(marketStatusTimer)
@@ -950,12 +1047,13 @@ onBeforeMount(() => {
     }
     officialStatement.value = result.officialStatement || ""
     updateMarketStatus()
+  }).catch(err => {
+    console.error("GetVersionInfo error:", err)
   })
 
   GetGroupList().then(result => {
     groupList.value = result
     menuOptions.value.map((item) => {
-      //console.log(item)
       if (item.key === 'stock') {
         item.children.push(...groupList.value.map(item => {
           return {
@@ -966,7 +1064,6 @@ onBeforeMount(() => {
                       href: '#',
                       type: 'info',
                       onClick: () => {
-                        //console.log("push",item)
                         router.push({
                           name: 'stock',
                           query: {
@@ -993,11 +1090,12 @@ onBeforeMount(() => {
         }))
       }
     })
+  }).catch(err => {
+    console.error("GetGroupList error:", err)
   })
 
 
   GetConfig().then((res) => {
-    //console.log(res)
     enableFund.value = res.enableFund
     enableAgent.value = res.enableAgent
 
@@ -1015,6 +1113,8 @@ onBeforeMount(() => {
     } else {
       enableDarkTheme.value = null
     }
+  }).catch(err => {
+    console.error("GetConfig error:", err)
   })
 })
 
@@ -1067,6 +1167,8 @@ onMounted(() => {
         })
       }
     })
+  }).catch(err => {
+    console.error("GetConfig(onMounted) error:", err)
   })
 })
 </script>

@@ -9,16 +9,22 @@ import (
 
 	gotdx "github.com/bensema/gotdx"
 	"github.com/bensema/gotdx/proto"
+	"github.com/bensema/gotdx/types"
 )
 
 type TdxKLineApi struct {
-	client *gotdx.Client
-	once   sync.Once
-	mu     sync.Mutex
+	client      *gotdx.Client
+	macClient   *gotdx.Client
+	macExClient *gotdx.Client
+	mu          sync.Mutex // 保护 client
+	macMu       sync.Mutex // 保护 macClient
+	macExMu     sync.Mutex // 保护 macExClient
 }
 
-var tdxApiInstance *TdxKLineApi
-var tdxApiOnce sync.Once
+var (
+	tdxApiInstance *TdxKLineApi
+	tdxApiOnce     sync.Once
+)
 
 func NewTdxKLineApi() *TdxKLineApi {
 	tdxApiOnce.Do(func() {
@@ -27,21 +33,49 @@ func NewTdxKLineApi() *TdxKLineApi {
 	return tdxApiInstance
 }
 
+func (t *TdxKLineApi) newClient() *gotdx.Client {
+	cfg := GetSettingConfig()
+	timeoutSec := cfg.CrawlTimeOut
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	return gotdx.New(
+		gotdx.WithAutoSelectFastest(true),
+		gotdx.WithTimeoutSec(int(timeoutSec)),
+	)
+}
+
+func (t *TdxKLineApi) newMACClient() *gotdx.Client {
+	cfg := GetSettingConfig()
+	timeoutSec := cfg.CrawlTimeOut
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	return gotdx.NewMAC(
+		gotdx.WithAutoSelectFastest(true),
+		gotdx.WithTimeoutSec(int(timeoutSec)),
+	)
+}
+
+func (t *TdxKLineApi) newMACExClient() *gotdx.Client {
+	cfg := GetSettingConfig()
+	timeoutSec := cfg.CrawlTimeOut
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	return gotdx.NewMACEx(
+		gotdx.WithAutoSelectFastest(true),
+		gotdx.WithTimeoutSec(int(timeoutSec)),
+	)
+}
+
 func (t *TdxKLineApi) ensureClient() error {
-	var initErr error
-	t.once.Do(func() {
-		cfg := GetSettingConfig()
-		timeoutSec := cfg.CrawlTimeOut
-		if timeoutSec <= 0 {
-			timeoutSec = 10
-		}
-		client := gotdx.New(
-			gotdx.WithAutoSelectFastest(true),
-			gotdx.WithTimeoutSec(int(timeoutSec)),
-		)
-		t.client = client
-	})
-	return initErr
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.client == nil {
+		t.client = t.newClient()
+	}
+	return nil
 }
 
 func (t *TdxKLineApi) reconnect() error {
@@ -50,15 +84,45 @@ func (t *TdxKLineApi) reconnect() error {
 	if t.client != nil {
 		t.client.Disconnect()
 	}
-	cfg := GetSettingConfig()
-	timeoutSec := cfg.CrawlTimeOut
-	if timeoutSec <= 0 {
-		timeoutSec = 10
+	t.client = t.newClient()
+	return nil
+}
+
+func (t *TdxKLineApi) ensureMACClient() error {
+	t.macMu.Lock()
+	defer t.macMu.Unlock()
+	if t.macClient == nil {
+		t.macClient = t.newMACClient()
 	}
-	t.client = gotdx.New(
-		gotdx.WithAutoSelectFastest(true),
-		gotdx.WithTimeoutSec(int(timeoutSec)),
-	)
+	return nil
+}
+
+func (t *TdxKLineApi) reconnectMAC() error {
+	t.macMu.Lock()
+	defer t.macMu.Unlock()
+	if t.macClient != nil {
+		t.macClient.Disconnect()
+	}
+	t.macClient = t.newMACClient()
+	return nil
+}
+
+func (t *TdxKLineApi) ensureMACExClient() error {
+	t.macExMu.Lock()
+	defer t.macExMu.Unlock()
+	if t.macExClient == nil {
+		t.macExClient = t.newMACExClient()
+	}
+	return nil
+}
+
+func (t *TdxKLineApi) reconnectMACEx() error {
+	t.macExMu.Lock()
+	defer t.macExMu.Unlock()
+	if t.macExClient != nil {
+		t.macExClient.Disconnect()
+	}
+	t.macExClient = t.newMACExClient()
 	return nil
 }
 
@@ -71,11 +135,15 @@ func tdxMarketFromStockCode(stockCode string) (uint8, string) {
 			pureCode := parts[0]
 			switch market {
 			case "SH", "SS":
-				return gotdx.MarketSH, pureCode
+				return uint8(types.MarketSH), pureCode
 			case "SZ":
-				return gotdx.MarketSZ, pureCode
+				return uint8(types.MarketSZ), pureCode
 			case "BJ":
-				return gotdx.MarketBJ, pureCode
+				return uint8(types.MarketBJ), pureCode
+			case "HK":
+				return uint8(types.MarketHK), pureCode
+			case "US":
+				return uint8(types.MarketUSA), pureCode
 			}
 		}
 	}
@@ -84,25 +152,69 @@ func tdxMarketFromStockCode(stockCode string) (uint8, string) {
 		pureCode := code[2:]
 		switch strings.ToUpper(marketStr) {
 		case "SH":
-			return gotdx.MarketSH, pureCode
+			return uint8(types.MarketSH), pureCode
 		case "SZ":
-			return gotdx.MarketSZ, pureCode
+			return uint8(types.MarketSZ), pureCode
 		case "BJ":
-			return gotdx.MarketBJ, pureCode
+			return uint8(types.MarketBJ), pureCode
 		}
+	}
+	// hk00700 → MarketHK, "00700"
+	if strings.HasPrefix(code, "HK") {
+		return uint8(types.MarketHK), code[2:]
+	}
+	// usAAPL → MarketUSA, "AAPL"
+	if strings.HasPrefix(code, "US") {
+		return uint8(types.MarketUSA), code[2:]
+	}
+	// gb_AAPL → MarketUSA, "AAPL"
+	if strings.HasPrefix(code, "GB_") {
+		return uint8(types.MarketUSA), code[3:]
 	}
 	if len(code) >= 1 {
 		first := code[0:1]
 		switch first {
 		case "6":
-			return gotdx.MarketSH, code
+			return uint8(types.MarketSH), code
 		case "0", "3":
-			return gotdx.MarketSZ, code
+			return uint8(types.MarketSZ), code
 		case "8", "9":
-			return gotdx.MarketBJ, code
+			return uint8(types.MarketBJ), code
 		}
 	}
-	return gotdx.MarketSH, code
+	return uint8(types.MarketSH), code
+}
+
+// TdxMarketFromStockCode 是 tdxMarketFromStockCode 的导出版本，供外部包调用
+func TdxMarketFromStockCode(stockCode string) (uint8, string) {
+	return tdxMarketFromStockCode(stockCode)
+}
+
+// macExMarketFromStockCode 将港美股代码转为 MAC 扩展行情的 market 值和纯代码
+// A股代码返回 ok=false，应使用 tdxMarketFromStockCode + MAC 客户端
+func macExMarketFromStockCode(stockCode string) (market uint8, code string, ok bool) {
+	upper := strings.ToUpper(strings.TrimSpace(stockCode))
+	if strings.Contains(upper, ".") {
+		parts := strings.Split(upper, ".")
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "HK":
+				return uint8(types.ExCategoryHKStock), parts[0], true
+			case "US":
+				return uint8(types.ExCategoryUSStock), parts[0], true
+			}
+		}
+	}
+	if strings.HasPrefix(upper, "HK") {
+		return uint8(types.ExCategoryHKStock), upper[2:], true
+	}
+	if strings.HasPrefix(upper, "US") {
+		return uint8(types.ExCategoryUSStock), upper[2:], true
+	}
+	if strings.HasPrefix(upper, "GB_") {
+		return uint8(types.ExCategoryUSStock), upper[3:], true
+	}
+	return 0, "", false
 }
 
 type TdxCallAuctionData struct {
@@ -206,7 +318,7 @@ func (t *TdxKLineApi) GetKLineData(stockCode string, klt string, limit int) *[]K
 	}
 
 	t.mu.Lock()
-	bars, err := t.client.StockKLine(uint16(klineType), market, code, 0, uint16(fetchCount), 0, gotdx.AdjustQFQ)
+	bars, err := t.client.StockKLine(uint16(klineType), market, code, 0, uint16(fetchCount), 0, types.AdjustQFQ)
 	t.mu.Unlock()
 
 	if err != nil {
@@ -216,7 +328,7 @@ func (t *TdxKLineApi) GetKLineData(stockCode string, klt string, limit int) *[]K
 			return result
 		}
 		t.mu.Lock()
-		bars, err = t.client.StockKLine(uint16(klineType), market, code, 0, uint16(fetchCount), 0, gotdx.AdjustQFQ)
+		bars, err = t.client.StockKLine(uint16(klineType), market, code, 0, uint16(fetchCount), 0, types.AdjustQFQ)
 		t.mu.Unlock()
 		if err != nil {
 			logger.SugaredLogger.Errorf("TdxKLine StockKLine retry error: %v", err)
@@ -277,11 +389,254 @@ func tdxAggregationParams(klt string) (srcKlt string, n int) {
 	}
 }
 
+// GetMACKLineData 通过 MAC 行情接口获取 K 线数据
+// A股使用 MAC 客户端，港美股使用 MAC Ex 客户端
+// 港股同时在 MAC 和 MAC Ex 上尝试
+func (t *TdxKLineApi) GetMACKLineData(stockCode string, klt string, limit int) *[]KLineData {
+	if limit <= 0 {
+		limit = 500
+	}
+
+	// 判断是否港美股
+	if exMarket, exCode, ok := macExMarketFromStockCode(stockCode); ok {
+		// 港股：先尝试 MAC 主服务器（MarketHK=3），再尝试 MAC Ex（ExCategoryHKStock=71）
+		if IsHKStockCode(stockCode) {
+			data := t.getMACMainKLineData(uint8(types.MarketHK), exCode, klt, limit)
+			if data != nil && len(*data) > 0 {
+				return data
+			}
+		}
+		// MAC Ex 扩展行情
+		return t.getMACExKLineData(exMarket, exCode, klt, limit)
+	}
+
+	// A股走 MAC 客户端
+	return t.getMACMainKLineDataEx(stockCode, klt, limit)
+}
+
+// getMACMainKLineDataEx A股走 MAC 主客户端
+func (t *TdxKLineApi) getMACMainKLineDataEx(stockCode string, klt string, limit int) *[]KLineData {
+	result := &[]KLineData{}
+	if err := t.ensureMACClient(); err != nil {
+		logger.SugaredLogger.Errorf("TdxKLine ensureMACClient error: %v", err)
+		return result
+	}
+	market, code := tdxMarketFromStockCode(stockCode)
+
+	aggSrc, aggN := tdxAggregationParams(klt)
+	actualKlt := klt
+	if aggSrc != "" {
+		actualKlt = aggSrc
+	}
+
+	klineType := tdxKLineTypeFromKlt(actualKlt)
+	if klineType < 0 {
+		logger.SugaredLogger.Warnf("TdxKLine MAC: unsupported klt %s", klt)
+		return result
+	}
+
+	fetchCount := uint32(limit)
+	if aggN > 1 {
+		fetchCount = uint32(limit * aggN)
+		if fetchCount > 8000 {
+			fetchCount = 8000
+		}
+	}
+
+	t.macMu.Lock()
+	bars, err := t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, types.AdjustQFQ)
+	t.macMu.Unlock()
+
+	if err != nil {
+		logger.SugaredLogger.Warnf("TdxKLine MACSymbolBars error: %v, reconnecting...", err)
+		if reconnectErr := t.reconnectMAC(); reconnectErr != nil {
+			logger.SugaredLogger.Errorf("TdxKLine reconnectMAC error: %v", reconnectErr)
+			return result
+		}
+		t.macMu.Lock()
+		bars, err = t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, types.AdjustQFQ)
+		t.macMu.Unlock()
+		if err != nil {
+			logger.SugaredLogger.Errorf("TdxKLine MACSymbolBars retry error: %v", err)
+			return result
+		}
+	}
+
+	if len(bars) == 0 {
+		return result
+	}
+
+	converted := convertMACSymbolBar(bars)
+
+	if aggN > 1 {
+		converted = *AggregateKLineEveryN(&converted, aggN)
+	}
+
+	return &converted
+}
+
+// getMACMainKLineData 通过 MAC 主客户端获取K线（指定 market 和 code）
+func (t *TdxKLineApi) getMACMainKLineData(market uint8, code string, klt string, limit int) *[]KLineData {
+	result := &[]KLineData{}
+	if err := t.ensureMACClient(); err != nil {
+		logger.SugaredLogger.Errorf("TdxKLine ensureMACClient error: %v", err)
+		return result
+	}
+
+	aggSrc, aggN := tdxAggregationParams(klt)
+	actualKlt := klt
+	if aggSrc != "" {
+		actualKlt = aggSrc
+	}
+
+	klineType := tdxKLineTypeFromKlt(actualKlt)
+	if klineType < 0 {
+		return result
+	}
+
+	fetchCount := uint32(limit)
+	if aggN > 1 {
+		fetchCount = uint32(limit * aggN)
+		if fetchCount > 8000 {
+			fetchCount = 8000
+		}
+	}
+
+	t.macMu.Lock()
+	bars, err := t.macClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, types.AdjustNone)
+	t.macMu.Unlock()
+
+	if err != nil {
+		logger.SugaredLogger.Debugf("TdxKLine MAC main MACSymbolBars for HK error: %v", err)
+		return result
+	}
+
+	if len(bars) == 0 {
+		return result
+	}
+
+	converted := convertMACSymbolBar(bars)
+	if aggN > 1 {
+		converted = *AggregateKLineEveryN(&converted, aggN)
+	}
+	return &converted
+}
+
+// getMACExKLineData 通过 MAC 扩展行情接口获取港美股 K 线数据
+func (t *TdxKLineApi) getMACExKLineData(market uint8, code string, klt string, limit int) *[]KLineData {
+	result := &[]KLineData{}
+	if err := t.ensureMACExClient(); err != nil {
+		logger.SugaredLogger.Errorf("TdxKLine ensureMACExClient error: %v", err)
+		return result
+	}
+
+	aggSrc, aggN := tdxAggregationParams(klt)
+	actualKlt := klt
+	if aggSrc != "" {
+		actualKlt = aggSrc
+	}
+
+	klineType := tdxKLineTypeFromKlt(actualKlt)
+	if klineType < 0 {
+		logger.SugaredLogger.Warnf("TdxKLine MAC Ex: unsupported klt %s", klt)
+		return result
+	}
+
+	fetchCount := uint32(limit)
+	if aggN > 1 {
+		fetchCount = uint32(limit * aggN)
+		if fetchCount > 8000 {
+			fetchCount = 8000
+		}
+	}
+
+	// 港美股不复权（扩展行情不支持复权）
+	t.macExMu.Lock()
+	bars, err := t.macExClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, types.AdjustNone)
+	t.macExMu.Unlock()
+
+	if err != nil {
+		logger.SugaredLogger.Warnf("TdxKLine MACEx MACSymbolBars error: %v, reconnecting...", err)
+		if reconnectErr := t.reconnectMACEx(); reconnectErr != nil {
+			logger.SugaredLogger.Errorf("TdxKLine reconnectMACEx error: %v", reconnectErr)
+			return result
+		}
+		t.macExMu.Lock()
+		bars, err = t.macExClient.MACSymbolBars(market, code, uint16(klineType), 1, 0, fetchCount, types.AdjustNone)
+		t.macExMu.Unlock()
+		if err != nil {
+			logger.SugaredLogger.Errorf("TdxKLine MACEx MACSymbolBars retry error: %v", err)
+			return result
+		}
+	}
+
+	if len(bars) == 0 {
+		return result
+	}
+
+	converted := convertMACSymbolBar(bars)
+
+	if aggN > 1 {
+		converted = *AggregateKLineEveryN(&converted, aggN)
+	}
+
+	return &converted
+}
+
+func convertMACSymbolBar(list []proto.MACSymbolBar) []KLineData {
+	result := make([]KLineData, 0, len(list))
+	for i, bar := range list {
+		day := formatMACDateTime(bar.DateTime)
+		kd := KLineData{
+			Day:    day,
+			Open:   fmt.Sprintf("%.2f", bar.Open),
+			Close:  fmt.Sprintf("%.2f", bar.Close),
+			High:   fmt.Sprintf("%.2f", bar.High),
+			Low:    fmt.Sprintf("%.2f", bar.Low),
+			Volume: fmt.Sprintf("%.0f", bar.Vol),
+			Amount: fmt.Sprintf("%.2f", bar.Amount),
+		}
+		if i > 0 {
+			prevClose := list[i-1].Close
+			if prevClose > 0 {
+				kd.ChangePercent = fmt.Sprintf("%.2f", (bar.Close-prevClose)/prevClose*100)
+				kd.ChangeValue = fmt.Sprintf("%.2f", bar.Close-prevClose)
+				kd.Amplitude = fmt.Sprintf("%.2f", (bar.High-bar.Low)/prevClose*100)
+			}
+		}
+		if bar.Turnover > 0 {
+			kd.TurnoverRate = fmt.Sprintf("%.2f", bar.Turnover)
+		}
+		result = append(result, kd)
+	}
+	return result
+}
+
+// formatMACDateTime 将 MAC 返回的 DateTime 字符串转为统一格式
+// MAC DateTime: "2006-01-02 15:04:05" 或 "2006-01-02 00:00:00"
+// 分钟线需要时间: "2006-01-02 15:04"
+// 日线及以上只需日期: "2006-01-02"
+func formatMACDateTime(dt string) string {
+	if len(dt) <= 10 {
+		return dt
+	}
+	// 有时间部分，判断是否为 00:00:00（日线及以上）
+	timePart := dt[11:]
+	if timePart == "00:00:00" {
+		return dt[:10]
+	}
+	// 分钟线：去掉秒，保留 "YYYY-MM-DD HH:MM"
+	if len(dt) >= 16 {
+		return dt[:16]
+	}
+	return dt[:10]
+}
+
 func convertTdxKLine(list []proto.SecurityBar) []KLineData {
 	result := make([]KLineData, 0, len(list))
 	for i, bar := range list {
 		kd := KLineData{
-			Day:    bar.DateTime,
+			Day:    bar.DateTime.Format("2006-01-02 15:04"),
 			Open:   fmt.Sprintf("%.2f", bar.Open),
 			Close:  fmt.Sprintf("%.2f", bar.Close),
 			High:   fmt.Sprintf("%.2f", bar.High),
@@ -620,4 +975,59 @@ func tdxDateToString(d uint32) string {
 
 func init() {
 	_ = time.DateTime
+}
+
+// MACBelongBoardItem 股票所属板块信息
+type MACBelongBoardItem struct {
+	BoardType      string  `json:"boardType" md:"板块类型"`
+	BoardCode      string  `json:"boardCode" md:"板块代码"`
+	BoardName      string  `json:"boardName" md:"板块名称"`
+	Price          float64 `json:"price" md:"板块价格/指数"`
+	PreClose       float64 `json:"preClose" md:"板块昨收"`
+	LimitUpCount   float64 `json:"limitUpCount" md:"涨停数"`
+	LimitDownCount float64 `json:"limitDownCount" md:"跌停数"`
+}
+
+// GetMACSymbolBelongBoard 通过 MAC 行情接口获取股票所属板块信息
+func (t *TdxKLineApi) GetMACSymbolBelongBoard(stockCode string) *[]MACBelongBoardItem {
+	result := &[]MACBelongBoardItem{}
+	if err := t.ensureMACClient(); err != nil {
+		logger.SugaredLogger.Errorf("TdxKLine ensureMACClient error: %v", err)
+		return result
+	}
+
+	market, code := tdxMarketFromStockCode(stockCode)
+
+	t.macMu.Lock()
+	items, err := t.macClient.MACSymbolBelongBoard(code, market)
+	t.macMu.Unlock()
+
+	if err != nil {
+		logger.SugaredLogger.Warnf("TdxKLine MACSymbolBelongBoard error: %v, reconnecting...", err)
+		if reconnectErr := t.reconnectMAC(); reconnectErr != nil {
+			logger.SugaredLogger.Errorf("TdxKLine reconnectMAC error: %v", reconnectErr)
+			return result
+		}
+		t.macMu.Lock()
+		items, err = t.macClient.MACSymbolBelongBoard(code, market)
+		t.macMu.Unlock()
+		if err != nil {
+			logger.SugaredLogger.Errorf("TdxKLine MACSymbolBelongBoard retry error: %v", err)
+			return result
+		}
+	}
+
+	converted := make([]MACBelongBoardItem, 0, len(items))
+	for _, item := range items {
+		converted = append(converted, MACBelongBoardItem{
+			BoardType:      item.BoardType,
+			BoardCode:      item.BoardCode,
+			BoardName:      item.BoardName,
+			Price:          item.Price,
+			PreClose:       item.PreClose,
+			LimitUpCount:   item.LimitUpCount,
+			LimitDownCount: item.LimitDownCount,
+		})
+	}
+	return &converted
 }

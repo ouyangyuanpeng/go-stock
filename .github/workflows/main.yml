@@ -27,11 +27,14 @@ jobs:
           - name: 'go-stock-windows-amd64.exe'
             platform:  'windows/amd64'
             os: 'windows-latest'
+          - name: 'go-stock-windows-arm64.exe'
+            platform:  'windows/arm64'
+            os: 'windows-latest'
           - name: 'go-stock-darwin-universal'
             platform: 'darwin/universal'
             os: 'macos-latest'
           - name: 'go-stock-darwin-intel'
-            platform: 'darwin'
+            platform: 'darwin/amd64'
             os: 'macos-latest'
           - name: 'go-stock-darwin-arm64'
             platform: 'darwin/arm64'
@@ -69,7 +72,7 @@ jobs:
           fi
 
       - name: Build wails x go-stock
-        uses: ArvinLovegood/wails-build-action@v3.7
+        uses: ArvinLovegood/wails-build-action@v3.8
         id: build
         with:
           build-name: ${{ matrix.build.name }}
@@ -82,6 +85,7 @@ jobs:
           build-key: ${{ env.BUILD_KEY }}
           node-version: '22.22.2'
           wails-version: 'v2.11.0'
+          nsis: 'true'
 
       - name: Update release for channel
         if: steps.channel.outputs.channel != 'release'

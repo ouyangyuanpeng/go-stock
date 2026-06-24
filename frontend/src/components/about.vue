@@ -2,7 +2,7 @@
 import { MdPreview } from 'md-editor-v3';
 import 'md-editor-v3/lib/preview.css';
 import {h, computed, nextTick, onBeforeUnmount, onMounted, ref} from 'vue';
-import {CheckUpdate, GetConfig, GetVersionInfo,GetSponsorInfo,GetUserManual,OpenURL} from "../../wailsjs/go/main/App";
+import {CheckUpdate, GetConfig, GetVersionInfo,GetSponsorInfo,GetUserManual,OpenURL,RestartAsAdmin} from "../../wailsjs/go/main/App";
 import {EventsOff, EventsOn,Environment} from "../../wailsjs/runtime";
 import {NAvatar, NButton, NTree, useNotification,NText} from "naive-ui";
 import { addMonths, format ,parse} from 'date-fns';
@@ -137,16 +137,14 @@ onMounted(() => {
 onBeforeUnmount(() => {
   notify.destroyAll()
   EventsOff("updateVersion")
+  EventsOff("updateNeedAdmin")
 })
 
 EventsOn("updateVersion",async (msg) => {
   const githubTimeStr = msg.published_at;
-  // 创建一个 Date 对象
   const utcDate = new Date(githubTimeStr);
-// 获取本地时间
   const date = new Date(utcDate.getTime());
   const year = date.getFullYear();
-// getMonth 返回值是 0 - 11，所以要加 1
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   const hours = String(date.getHours()).padStart(2, '0');
@@ -155,8 +153,6 @@ EventsOn("updateVersion",async (msg) => {
 
   const formattedDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 
-  //console.log("GitHub UTC 时间:", utcDate);
-  //console.log("转换后的本地时间:", formattedDate);
   notify.info({
     avatar: () =>
         h(NAvatar, {
@@ -166,7 +162,6 @@ EventsOn("updateVersion",async (msg) => {
         }),
     title: '发现新版本: ' + msg.tag_name,
     content: () => {
-      //return h(MdPreview, {theme:'dark',modelValue:msg.commit?.message}, null)
       return h('div', {
         style: {
           'text-align': 'left',
@@ -193,6 +188,36 @@ EventsOn("updateVersion",async (msg) => {
           })
         }
       }, { default: () => '查看' })
+    }
+  })
+})
+
+EventsOn("updateNeedAdmin", (msg) => {
+  notify.warning({
+    avatar: () =>
+        h(NAvatar, {
+          size: 'small',
+          round: false,
+          src: icon.value
+        }),
+    title: '更新需要管理员权限',
+    content: () => {
+      return h('div', {
+        style: {
+          'text-align': 'left',
+          'font-size': '14px',
+        }
+      }, { default: () => '新版本 ' + (msg.version || '') + ' 下载完成，但自动替换文件需要管理员权限。请以管理员身份重启程序后再次检查更新。' })
+    },
+    duration: 15000,
+    action: () => {
+      return h(NButton, {
+        type: 'warning',
+        size: 'small',
+        onClick: () => {
+          RestartAsAdmin()
+        }
+      }, { default: () => '以管理员身份重启' })
     }
   })
 })

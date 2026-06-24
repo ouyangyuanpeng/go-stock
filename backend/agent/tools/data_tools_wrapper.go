@@ -1164,7 +1164,7 @@ func GetAllDataTools() []tool.BaseTool {
 
 	tools = append(tools, NewDataToolWrapper(
 		"GetStockKLine",
-		"获取股票日K线数据。支持一次查询多只。",
+		"获取股票日K线数据。支持一次查询多只。数据源优先级：通达信MAC→东方财富→新浪→腾讯→通达信。",
 		map[string]*schema.ParameterInfo{
 			"days": {
 				Type:     "string",
@@ -1192,15 +1192,13 @@ func GetAllDataTools() []tool.BaseTool {
 				}
 			}
 			var allResults []map[string]any
-			api := data.NewStockDataApi()
 			for _, code := range codes {
 				var klineData *[]data.KLineData
-				if strings.HasPrefix(code, "sz") || strings.HasPrefix(code, "sh") {
-					klineData = api.GetKLineData(code, "240", int64(toIntDay))
-				} else if strings.HasPrefix(code, "hk") || strings.HasPrefix(code, "us") || strings.HasPrefix(code, "gb_") {
+				if strings.HasPrefix(code, "hk") || strings.HasPrefix(code, "us") || strings.HasPrefix(code, "gb_") {
+					api := data.NewStockDataApi()
 					klineData = api.GetHK_KLineData(code, "day", int64(toIntDay))
-				}
-				if klineData == nil || len(*klineData) == 0 {
+				} else {
+					// A股优先使用 FetchKLineWithFallback（MAC→东方财富→新浪→腾讯→通达信）
 					fallbackResult := data.FetchKLineWithFallback(code, "", "101", toIntDay, "")
 					if fallbackResult.Data != nil && len(*fallbackResult.Data) > 0 {
 						klineData = fallbackResult.Data
@@ -1231,7 +1229,7 @@ func GetAllDataTools() []tool.BaseTool {
 
 	tools = append(tools, NewDataToolWrapper(
 		"GetEastMoneyKLine",
-		"获取股票 K 线数据。支持日/周/月/季/年 K 线及 1/5/15/30/60 分钟线，可选前复权或后复权。股票代码格式：A股 000001.SZ、600000.SH，港股 00700.HK 等。支持一次查询多只。",
+		"获取股票 K 线数据。支持日/周/月/季/年 K 线及 1/5/15/30/60 分钟线，可选前复权或后复权。A股数据源优先级：通达信MAC→东方财富→新浪→腾讯→通达信。港股走东方财富。股票代码格式：A股 000001.SZ、600000.SH，港股 00700.HK 等。支持一次查询多只。",
 		map[string]*schema.ParameterInfo{
 			"stockCode": {
 				Type:     "string",
@@ -1274,14 +1272,21 @@ func GetAllDataTools() []tool.BaseTool {
 			if len(codes) == 0 {
 				return "参数 stockCode 或 stockCodes 不能为空", nil
 			}
+			kType := data.NormalizeKLineType(kLineType)
 			var results []string
 			for _, code := range codes {
 				if code == "" {
 					continue
 				}
-				api := data.NewEastMoneyKLineApi(data.GetSettingConfig())
-				res := data.EastMoneyKLineSection(api, code, kLineType, adjustFlag, limit)
-				results = append(results, res)
+				// A股优先使用 FetchKLineWithFallback（MAC→东方财富→新浪→腾讯→通达信）
+				if data.IsAStockCode(code) {
+					res := data.FetchKLineWithFallbackAsSection(code, kType, limit)
+					results = append(results, res)
+				} else {
+					api := data.NewEastMoneyKLineApi(data.GetSettingConfig())
+					res := data.EastMoneyKLineSection(api, code, kLineType, adjustFlag, limit)
+					results = append(results, res)
+				}
 			}
 			return strings.Join(results, "\n"), nil
 		},
@@ -1289,7 +1294,7 @@ func GetAllDataTools() []tool.BaseTool {
 
 	tools = append(tools, NewDataToolWrapper(
 		"GetEastMoneyKLineWithMA",
-		"获取股票 K 线数据并带多条均线（SMA，按收盘价计算）。用于技术分析时同时查看 K 线与均线。",
+		"获取股票 K 线数据并带多条均线（SMA，按收盘价计算）。用于技术分析时同时查看 K 线与均线。A股数据源优先级：通达信MAC→东方财富→新浪→腾讯→通达信。",
 		map[string]*schema.ParameterInfo{
 			"stockCode": {
 				Type:     "string",
@@ -1332,14 +1337,21 @@ func GetAllDataTools() []tool.BaseTool {
 			if len(codes) == 0 {
 				return "参数 stockCode 或 stockCodes 不能为空", nil
 			}
+			kType := data.NormalizeKLineType(kLineType)
 			var results []string
 			for _, code := range codes {
 				if code == "" {
 					continue
 				}
-				api := data.NewEastMoneyKLineApi(data.GetSettingConfig())
-				res := data.EastMoneyKLineWithMASection(api, code, kLineType, limit, maPeriodsStr)
-				results = append(results, res)
+				// A股优先使用 FetchKLineWithFallback + 均线计算
+				if data.IsAStockCode(code) {
+					res := data.FetchKLineWithMASection(code, kType, limit, maPeriodsStr)
+					results = append(results, res)
+				} else {
+					api := data.NewEastMoneyKLineApi(data.GetSettingConfig())
+					res := data.EastMoneyKLineWithMASection(api, code, kLineType, limit, maPeriodsStr)
+					results = append(results, res)
+				}
 			}
 			return strings.Join(results, "\n"), nil
 		},
@@ -1699,6 +1711,202 @@ func GetAllDataTools() []tool.BaseTool {
 				NetGrowthYTD:   fund.NetGrowthYTD,
 			}
 			return util.MarkdownTableWithTitle(fund.Name+" ("+fund.Code+") 基金详细信息", row), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"GetFundKLine",
+		"获取基金K线数据，支持多周期(日K/周K/月K/年K等)。场内基金(ETF/LOF)使用4层数据源fallback，场外基金从东方财富历史净值接口获取",
+		map[string]*schema.ParameterInfo{
+			"fundCode": {
+				Type:     "string",
+				Desc:     "基金代码，如 510050(场内ETF)、000001(场外基金)",
+				Required: true,
+			},
+			"klt": {
+				Type:     "string",
+				Desc:     "K线周期: 101=日K, 102=周K, 103=月K, 104=年K",
+				Required: false,
+			},
+			"limit": {
+				Type:     "integer",
+				Desc:     "返回数据条数，默认100",
+				Required: false,
+			},
+		},
+		func(args string) (string, error) {
+			fundCode := gjson.Get(args, "fundCode").String()
+			klt := gjson.Get(args, "klt").String()
+			limit := gjson.Get(args, "limit").Int()
+			if fundCode == "" {
+				return "请输入基金代码", nil
+			}
+			if klt == "" {
+				klt = "101"
+			}
+			if limit <= 0 {
+				limit = 100
+			}
+			result := data.NewFundKLineApi().GetFundKLine(fundCode, klt, int(limit))
+			if result == nil || result.Data == nil || len(*result.Data) == 0 {
+				return "未获取到该基金的K线数据", nil
+			}
+			type klineRow struct {
+				Day           string `md:"日期"`
+				Open          string `md:"开盘价"`
+				Close         string `md:"收盘价"`
+				High          string `md:"最高价"`
+				Low           string `md:"最低价"`
+				Volume        string `md:"成交量"`
+				ChangePercent string `md:"涨跌幅(%)"`
+			}
+			var rows []klineRow
+			klineData := *result.Data
+			startIdx := 0
+			if len(klineData) > 20 {
+				startIdx = len(klineData) - 20
+			}
+			for i := startIdx; i < len(klineData); i++ {
+				item := klineData[i]
+				rows = append(rows, klineRow{
+					Day:           item.Day,
+					Open:          item.Open,
+					Close:         item.Close,
+					High:          item.High,
+					Low:           item.Low,
+					Volume:        item.Volume,
+					ChangePercent: item.ChangePercent,
+				})
+			}
+			source := result.Source
+			if source == "" {
+				source = "未知"
+			}
+			return util.MarkdownTableWithTitle(fmt.Sprintf("基金 %s K线数据(最近20条, 来源:%s, 总%d条)", fundCode, source, len(klineData)), rows), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"GetFundHistoryNetValue",
+		"获取基金历史净值数据。场外基金从东方财富API获取，场内基金(ETF/LOF)从K线收盘价换算",
+		map[string]*schema.ParameterInfo{
+			"fundCode": {
+				Type:     "string",
+				Desc:     "基金代码，如 000001",
+				Required: true,
+			},
+			"pageIndex": {
+				Type:     "integer",
+				Desc:     "页码，默认1",
+				Required: false,
+			},
+			"pageSize": {
+				Type:     "integer",
+				Desc:     "每页条数，默认20",
+				Required: false,
+			},
+			"startDate": {
+				Type:     "string",
+				Desc:     "开始日期，格式 YYYY-MM-DD",
+				Required: false,
+			},
+			"endDate": {
+				Type:     "string",
+				Desc:     "结束日期，格式 YYYY-MM-DD",
+				Required: false,
+			},
+		},
+		func(args string) (string, error) {
+			fundCode := gjson.Get(args, "fundCode").String()
+			pageIndex := gjson.Get(args, "pageIndex").Int()
+			pageSize := gjson.Get(args, "pageSize").Int()
+			startDate := gjson.Get(args, "startDate").String()
+			endDate := gjson.Get(args, "endDate").String()
+			if fundCode == "" {
+				return "请输入基金代码", nil
+			}
+			if pageIndex <= 0 {
+				pageIndex = 1
+			}
+			if pageSize <= 0 {
+				pageSize = 20
+			}
+			values, err := data.NewFundApi().GetFundHistoryNetValue(fundCode, int(pageIndex), int(pageSize), startDate, endDate)
+			if err != nil {
+				return fmt.Sprintf("获取基金历史净值失败: %v", err), nil
+			}
+			if len(values) == 0 {
+				return "未获取到该基金的历史净值数据", nil
+			}
+			type netValueRow struct {
+				Date        string  `md:"日期"`
+				NetValue    float64 `md:"单位净值"`
+				AccumValue  float64 `md:"累计净值"`
+				DailyGrowth float64 `md:"日增长率(%)"`
+			}
+			var rows []netValueRow
+			for _, v := range values {
+				rows = append(rows, netValueRow{
+					Date:        v.Date,
+					NetValue:    v.NetValue,
+					AccumValue:  v.AccumValue,
+					DailyGrowth: v.DailyGrowth,
+				})
+			}
+			return util.MarkdownTableWithTitle(fmt.Sprintf("基金 %s 历史净值(第%d页, 每页%d条)", fundCode, pageIndex, pageSize), rows), nil
+		},
+	))
+
+	tools = append(tools, NewDataToolWrapper(
+		"GetFundTop10Holdings",
+		"获取基金前十大重仓持股信息，包括股票代码、名称、持仓占比、实时股价和涨跌幅",
+		map[string]*schema.ParameterInfo{
+			"fundCode": {
+				Type:     "string",
+				Desc:     "基金代码，如 000001",
+				Required: true,
+			},
+		},
+		func(args string) (string, error) {
+			fundCode := gjson.Get(args, "fundCode").String()
+			if fundCode == "" {
+				return "请输入基金代码", nil
+			}
+			holdings, err := data.NewFundApi().GetFundTop10Holdings(fundCode)
+			if err != nil {
+				return fmt.Sprintf("获取基金十大持仓股失败: %v", err), nil
+			}
+			if len(holdings) == 0 {
+				return "未获取到该基金的持仓数据", nil
+			}
+			type holdingRow struct {
+				Rank       int      `md:"排名"`
+				StockCode  string   `md:"股票代码"`
+				StockName  string   `md:"股票名称"`
+				Market     string   `md:"市场"`
+				Ratio      float64  `md:"持仓占比(%)"`
+				Price      *float64 `md:"最新价"`
+				ChangeRate *float64 `md:"涨跌幅(%)"`
+				Quarter    string   `md:"报告期"`
+			}
+			var rows []holdingRow
+			for _, h := range holdings {
+				rows = append(rows, holdingRow{
+					Rank:       h.Rank,
+					StockCode:  h.StockCode,
+					StockName:  h.StockName,
+					Market:     h.Market,
+					Ratio:      h.Ratio,
+					Price:      h.Price,
+					ChangeRate: h.ChangeRate,
+					Quarter:    h.Quarter,
+				})
+			}
+			quarter := holdings[0].Quarter
+			if quarter == "" {
+				quarter = "最新"
+			}
+			return util.MarkdownTableWithTitle(fmt.Sprintf("基金 %s 十大重仓股(%s)", fundCode, quarter), rows), nil
 		},
 	))
 
@@ -4677,7 +4885,42 @@ func GetAllDataTools() []tool.BaseTool {
 		},
 	))
 
-	return tools
+	// GetTdxSymbolBelongBoard - 通过通达信MAC接口获取股票所属板块信息
+	tools = append(tools, NewDataToolWrapper(
+		"GetTdxSymbolBelongBoard",
+		"通过通达信MAC接口获取股票所属板块信息，包括行业板块、概念板块、地域板块、风格板块等，以及板块指数、涨停/跌停家数等数据。",
+		map[string]*schema.ParameterInfo{
+			"stockCode": {
+				Type:     "string",
+				Desc:     "股票代码,如：600519.SH。上海证券交易所股票以.SH结尾，深圳证券交易所股票以.SZ结尾，北交所股票以.BJ结尾，港股以.HK结尾。多只时可用英文逗号分隔。",
+				Required: true,
+			},
+		},
+		func(args string) (string, error) {
+			stockCode := gjson.Get(args, "stockCode").String()
+			if stockCode == "" {
+				return "请提供股票代码参数 stockCode", nil
+			}
+			api := data.NewTdxKLineApi()
+			items := api.GetMACSymbolBelongBoard(stockCode)
+			if items == nil || len(*items) == 0 {
+				return fmt.Sprintf("%s：获取所属板块信息失败或无数据", stockCode), nil
+			}
+			return util.MarkdownTableWithTitle(stockCode+" 所属板块（通达信MAC）", *items), nil
+		},
+	))
+
+	// 根据 API Key 配置过滤工具，未配置对应 Key 的工具不注册
+	filtered := make([]tool.BaseTool, 0, len(tools))
+	for _, t := range tools {
+		if wrapper, ok := t.(*DataToolWrapper); ok {
+			if !data.IsToolKeyConfigured(wrapper.name) {
+				continue
+			}
+		}
+		filtered = append(filtered, t)
+	}
+	return filtered
 }
 
 func fetchUplimitData(date string) (map[string]any, error) {

@@ -366,6 +366,9 @@ func AskAi(o *OpenAi, err error, messages []map[string]interface{}, ch chan map[
 		SetHeader("Authorization", "Bearer "+o.ApiKey).
 		SetHeader("Content-Type", "application/json").
 		SetBody(bodyMap)
+	if extra := BuildExtraHeaders(o.ExtraHeaders, o.ChatSource); len(extra) > 0 {
+		req = req.SetHeaders(extra)
+	}
 	if o.ctx != nil {
 		req = req.SetContext(o.ctx)
 	}
@@ -586,6 +589,9 @@ func AskAiWithToolsDepth(o *OpenAi, err error, messages []map[string]interface{}
 		SetHeader("Authorization", "Bearer "+o.ApiKey).
 		SetHeader("Content-Type", "application/json").
 		SetBody(bodyMap)
+	if extra := BuildExtraHeaders(o.ExtraHeaders, o.ChatSource); len(extra) > 0 {
+		req = req.SetHeaders(extra)
+	}
 	if o.ctx != nil {
 		req = req.SetContext(o.ctx)
 	}
@@ -694,6 +700,7 @@ func AskAiWithToolsDepth(o *OpenAi, err error, messages []map[string]interface{}
 					StreamResponseID:     streamResponseID,
 					Model:                model,
 					Source:               o.ChatSource,
+					SystemPrompt:         extractSystemPrompt(&messages),
 				}); hErr != nil {
 					logger.SugaredLogger.Errorf("tool %s error: %s", call.Name, hErr.Error())
 					ch <- map[string]any{

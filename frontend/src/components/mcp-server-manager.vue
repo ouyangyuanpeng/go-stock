@@ -86,14 +86,63 @@
         <n-input v-model:value="formData.url" placeholder="例如：http://localhost:8080 或 SSE 端点地址" clearable />
       </n-form-item>
 
-      <n-form-item label="环境变量" path="env">
-        <n-input
-          v-model:value="formData.env"
-          type="textarea"
-          :rows="3"
-          placeholder='JSON 对象格式，例如：{"API_KEY": "your-api-key"}'
-          show-count
-        />
+      <n-form-item label="HTTP Headers">
+        <div style="width: 100%">
+          <div
+            v-for="(item, index) in headerList"
+            :key="index"
+            style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center"
+          >
+            <n-input
+              v-model:value="item.key"
+              placeholder="Header 名称（如 X-api-key）"
+              style="flex: 1"
+            />
+            <n-input
+              v-model:value="item.value"
+              placeholder="Header 值"
+              style="flex: 1.5"
+            />
+            <n-button quaternary circle @click="removeHeader(index)">
+              <template #icon>
+                <n-icon :component="TrashOutline" />
+              </template>
+            </n-button>
+          </div>
+          <n-button dashed block size="small" @click="addHeader">
+            <template #icon>
+              <n-icon :component="AddOutline" />
+            </template>
+            添加 Header
+          </n-button>
+        </div>
+      </n-form-item>
+
+      <n-form-item label="鉴权方式" path="authType">
+        <n-space vertical style="width: 100%">
+          <n-select
+            v-model:value="formData.authType"
+            :options="authTypeOptions"
+            style="width: 260px"
+          />
+          <n-space v-if="formData.authType === 'oauth'" align="center">
+            <n-button
+              type="info"
+              size="small"
+              :loading="oauthStarting"
+              :disabled="!formData.id"
+              @click="handleOAuth(formData.id)"
+            >
+              <template #icon>
+                <n-icon :component="LockClosedOutline" />
+              </template>
+              {{ formData.id ? '授权登录' : '保存后可授权' }}
+            </n-button>
+            <n-text depth="3" style="font-size: 12px">
+              标准安全配置（HTTP 方式）：拉起浏览器完成账号授权，凭证加密存储、自动刷新
+            </n-text>
+          </n-space>
+        </n-space>
       </n-form-item>
 
       <n-form-item label="启用状态" path="enable">
@@ -192,7 +241,8 @@ import {
   StopCircleOutline,
   CheckmarkCircleOutline,
   FlashOutline,
-  EyeOutline
+  EyeOutline,
+  LockClosedOutline
 } from '@vicons/ionicons5'
 import {
   CreateMCPServer,
@@ -202,6 +252,7 @@ import {
   GetMCPServerList,
   EnableMCPServer,
   TestMCPServer,
+  StartMCPOAuth,
   GetMCPToolsByServerID,
   GetAllMCPTools
 } from '../../wailsjs/go/main/App'
@@ -230,10 +281,54 @@ const formData = reactive({
   url: '',
   command: '',
   args: '',
-  env: '',
+  headers: '',
   enable: true,
-  status: 'untested'
+  status: 'untested',
+  authType: 'none'
 })
+
+const oauthStarting = ref(false)
+
+// HTTP Headers 表单式编辑：避免用户直接写 JSON
+const headerList = reactive([])
+
+const addHeader = () => {
+  headerList.push({ key: '', value: '' })
+}
+
+const removeHeader = (index) => {
+  headerList.splice(index, 1)
+}
+
+const parseHeadersToList = (jsonStr) => {
+  headerList.splice(0, headerList.length)
+  if (!jsonStr) {
+    headerList.push({ key: '', value: '' })
+    return
+  }
+  try {
+    const obj = JSON.parse(jsonStr)
+    Object.entries(obj).forEach(([k, v]) => {
+      headerList.push({ key: k, value: String(v) })
+    })
+  } catch (e) {
+    // JSON 解析失败时留空，让用户重新填写
+  }
+  if (headerList.length === 0) {
+    headerList.push({ key: '', value: '' })
+  }
+}
+
+const serializeHeaders = () => {
+  const obj = {}
+  headerList.forEach((item) => {
+    const key = item.key.trim()
+    if (key) {
+      obj[key] = item.value
+    }
+  })
+  return Object.keys(obj).length === 0 ? '' : JSON.stringify(obj)
+}
 
 const formRules = {
   name: { required: true, message: '请输入服务器名称', trigger: ['input', 'blur'] },
@@ -243,7 +338,13 @@ const formRules = {
 const statusOptions = [
   { label: '可用', value: 'available' },
   { label: '未测试', value: 'untested' },
-  { label: '不可用', value: 'unavailable' }
+  { label: '不可用', value: 'unavailable' },
+  { label: '未授权', value: 'unauthorized' }
+]
+
+const authTypeOptions = [
+  { label: '无（静态 Headers）', value: 'none' },
+  { label: 'OAuth 2.1（浏览器授权）', value: 'oauth' }
 ]
 
 const getStatusLabel = (status) => {
@@ -254,6 +355,10 @@ const getStatusLabel = (status) => {
       return '未测试'
     case 'unavailable':
       return '不可用'
+    case 'unauthorized':
+      return '未授权'
+    case 'testing':
+      return '授权中'
     default:
       return status
   }
@@ -493,7 +598,9 @@ const columns = [
       const typeMap = {
         available: 'success',
         untested: 'default',
-        unavailable: 'error'
+        unavailable: 'error',
+        unauthorized: 'warning',
+        testing: 'info'
       }
       return h(NTag, { type: typeMap[row.status] || 'default' }, {
         default: () => getStatusLabel(row.status)
@@ -517,8 +624,7 @@ const columns = [
     width: 280,
     fixed: 'right',
     render(row) {
-      return h(NSpace, {}, {
-        default: () => [
+      const actionBtns = [
           h(
             NButton,
             {
@@ -530,7 +636,26 @@ const columns = [
               icon: () => h(NIcon, { component: FlashOutline }),
               default: () => '测试'
             }
-          ),
+          )
+      ]
+      // OAuth 类服务器：提供「授权」入口（未授权黄色 / 重新授权默认色）
+      if (row.authType === 'oauth') {
+        actionBtns.push(
+          h(
+            NButton,
+            {
+              size: 'tiny',
+              type: row.status === 'unauthorized' ? 'warning' : 'default',
+              onClick: () => handleOAuth(row.id)
+            },
+            {
+              icon: () => h(NIcon, { component: LockClosedOutline }),
+              default: () => (row.status === 'unauthorized' ? '授权' : '重新授权')
+            }
+          )
+        )
+      }
+      actionBtns.push(
           h(
             NButton,
             {
@@ -576,7 +701,9 @@ const columns = [
               default: () => `确定要删除服务器 "${row.name}" 吗？`
             }
           )
-        ]
+      )
+      return h(NSpace, {}, {
+        default: () => actionBtns
       })
     }
   }
@@ -658,6 +785,21 @@ const handleTest = async (row) => {
   }
 }
 
+// 发起 OAuth 授权：后端打开浏览器，凭证落库后由服务器状态反馈结果
+const handleOAuth = async (id) => {
+  if (!id) return
+  oauthStarting.value = true
+  try {
+    const result = await StartMCPOAuth(id)
+    message.info(result)
+    await loadServerList()
+  } catch (error) {
+    message.error('授权失败：' + error.message)
+  } finally {
+    oauthStarting.value = false
+  }
+}
+
 const handleToggleEnable = async (row) => {
   try {
     const newEnable = !row.enable
@@ -687,9 +829,11 @@ const handleEdit = async (row) => {
       formData.url = server.url
       formData.command = server.command
       formData.args = server.args
-      formData.env = server.env
+      formData.headers = server.headers
+      parseHeadersToList(server.headers)
       formData.enable = server.enable
       formData.status = server.status
+      formData.authType = server.authType || 'none'
       showCreateModal.value = true
     }
   } catch (error) {
@@ -719,6 +863,7 @@ const handleSubmit = async () => {
 
     submitting.value = true
     const submitData = { ...formData }
+    submitData.headers = serializeHeaders()
 
     let result
     if (formData.id) {
@@ -749,10 +894,13 @@ const resetForm = () => {
     url: '',
     command: '',
     args: '',
-    env: '',
+    headers: '',
     enable: true,
-    status: 'stopped'
+    status: 'stopped',
+    authType: 'none'
   })
+  headerList.splice(0, headerList.length)
+  headerList.push({ key: '', value: '' })
   if (formRef.value) {
     formRef.value.restoreValidation()
   }

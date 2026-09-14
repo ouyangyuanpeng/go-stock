@@ -72,150 +72,206 @@ type F10Result struct {
 }
 
 var f10FieldCN = map[string]string{
-	"SECUCODE":                    "证券代码",
-	"SECURITY_CODE":               "股票代码",
-	"SECURITY_NAME_ABBR":          "股票简称",
-	"ORG_CODE":                    "机构代码",
-	"REPORT_DATE":                 "报告日期",
-	"REPORT_TYPE":                 "报告类型",
-	"FORMERNAME":                  "曾用名",
-	"MAKET_CODE":                  "市场代码",
-	"SECURITY_TYPE_CODE":          "证券类型代码",
-	"SECURITY_INNER_CODE":         "证券内部代码",
-	"SECURITY_TYPE":               "证券类型",
-	"SECURITY_TYPE_WEB":           "证券类型",
-	"EPSJB":                       "基本每股收益",
-	"EPSKCJB":                     "扣非每股收益",
-	"EPSXS":                       "稀释每股收益",
-	"EPSJB_PL":                    "摊薄每股收益",
-	"BPS":                         "每股净资产",
-	"BPS_PL":                      "摊薄每股净资产",
-	"MGZBGJ":                      "每股资本公积",
-	"MGWFPLR":                     "每股未分配利润",
-	"MGJYXJJE":                    "每股经营现金流",
-	"PER_CAPITAL_RESERVE":         "每股资本公积",
-	"PER_UNASSIGN_PROFIT":         "每股未分配利润",
-	"PER_NETCASH":                 "每股经营现金流",
-	"TOTAL_OPERATEINCOME":         "营业总收入",
-	"TOTAL_OPERATEINCOME_LAST":    "营业总收入(上年)",
-	"PARENT_NETPROFIT":            "归属净利润",
-	"PARENT_NETPROFIT_LAST":       "归属净利润(上年)",
-	"KCFJCXSYJLR":                 "扣非净利润",
-	"KCFJCXSYJLR_LAST":            "扣非净利润(上年)",
-	"ROEJQ":                       "ROE(加权)",
-	"ROEJQ_LAST":                  "ROE(加权)(上年)",
-	"XSMLL":                       "销售毛利率",
-	"XSMLL_LAST":                  "销售毛利率(上年)",
-	"ZCFZL":                       "资产负债率",
-	"ZCFZL_LAST":                  "资产负债率(上年)",
-	"YYZSRGDHBZC":                 "营收环比增长",
-	"YYZSRGDHBZC_LAST":            "营收环比增长(上年)",
-	"NETPROFITRPHBZC":             "净利润环比增长",
-	"NETPROFITRPHBZC_LAST":        "净利润环比增长(上年)",
-	"KFJLRGDHBZC":                 "扣非净利环比增长",
-	"KFJLRGDHBZC_LAST":            "扣非净利环比增长(上年)",
-	"TOTALOPERATEREVETZ":          "营收同比增长",
-	"TOTALOPERATEREVETZ_LAST":     "营收同比增长(上年)",
-	"PARENTNETPROFITTZ":           "净利同比增长",
-	"PARENTNETPROFITTZ_LAST":      "净利同比增长(上年)",
-	"KCFJCXSYJLRTZ":               "扣非净利同比增长",
-	"KCFJCXSYJLRTZ_LAST":          "扣非净利同比增长(上年)",
-	"TOTAL_SHARE":                 "总股本",
-	"FREE_SHARE":                  "流通股",
-	"TOTALOPERATEREVE":            "营业总收入",
-	"GROSS_PROFIT":                "毛利润",
-	"PARENTNETPROFIT":             "归属净利润",
-	"DEDU_PARENT_PROFIT":          "扣非净利润",
-	"DPNP_YOY_RATIO":              "扣非净利同比增长",
-	"ROE_DILUTED":                 "ROE(摊薄)",
-	"JROA":                        "总资产净利率",
-	"NET_PROFIT_RATIO":            "净利率",
-	"GROSS_PROFIT_RATIO":          "毛利率",
-	"SEASON_LABEL":                "报告期",
-	"PUBLISH_DATE":                "发布日期",
-	"ORG_NAME_ABBR":               "机构简称",
-	"YEAR1":                       "预测年份1",
-	"YEAR_MARK1":                  "标识1",
-	"EPS1":                        "每股收益预测1",
-	"PE1":                         "预测市盈率1",
-	"YEAR2":                       "预测年份2",
-	"YEAR_MARK2":                  "标识2",
-	"EPS2":                        "每股收益预测2",
-	"PE2":                         "预测市盈率2",
-	"YEAR3":                       "预测年份3",
-	"YEAR_MARK3":                  "标识3",
-	"EPS3":                        "每股收益预测3",
-	"PE3":                         "预测市盈率3",
-	"YEAR4":                       "预测年份4",
-	"YEAR_MARK4":                  "标识4",
-	"EPS4":                        "每股收益预测4",
-	"PE4":                         "预测市盈率4",
-	"YEAR":                        "年份",
-	"YEAR_MARK":                   "标识",
-	"EPS":                         "每股收益",
-	"EPS_RATIO":                   "EPS增长率",
-	"PE":                          "市盈率",
-	"ROE":                         "ROE",
-	"RANK":                        "排名",
-	"PARENT_NETPROFIT_RATIO":      "净利润增长率",
-	"TOTAL_OPERATE_INCOME":        "营业总收入",
-	"TOTAL_OPERATE_INCOME_RATIO":  "营收增长率",
-	"OPERATE_PROFIT":              "营业利润",
-	"STATISTICS_CYCLE":            "统计周期",
-	"INDEX_TYPE":                  "指标类型",
-	"PERCENTILE_THIRTY":           "30%分位",
-	"PERCENTILE_FIFTY":            "50%分位(中位数)",
-	"PERCENTILE_SEVENTY":          "70%分位",
-	"MARGIN_BALANCE":              "融资融券余额",
+	"SECUCODE":                   "证券代码",
+	"SECURITY_CODE":              "股票代码",
+	"SECURITY_NAME_ABBR":         "股票简称",
+	"ORG_CODE":                   "机构代码",
+	"REPORT_DATE":                "报告日期",
+	"REPORT_TYPE":                "报告类型",
+	"FORMERNAME":                 "曾用名",
+	"MAKET_CODE":                 "市场代码",
+	"SECURITY_TYPE_CODE":         "证券类型代码",
+	"SECURITY_INNER_CODE":        "证券内部代码",
+	"SECURITY_TYPE":              "证券类型",
+	"SECURITY_TYPE_WEB":          "证券类型",
+	"EPSJB":                      "基本每股收益",
+	"EPSKCJB":                    "扣非每股收益",
+	"EPSXS":                      "稀释每股收益",
+	"EPSJB_PL":                   "摊薄每股收益",
+	"BPS":                        "每股净资产",
+	"BPS_PL":                     "摊薄每股净资产",
+	"MGZBGJ":                     "每股资本公积",
+	"MGWFPLR":                    "每股未分配利润",
+	"MGJYXJJE":                   "每股经营现金流",
+	"PER_CAPITAL_RESERVE":        "每股资本公积",
+	"PER_UNASSIGN_PROFIT":        "每股未分配利润",
+	"PER_NETCASH":                "每股经营现金流",
+	"TOTAL_OPERATEINCOME":        "营业总收入",
+	"TOTAL_OPERATEINCOME_LAST":   "营业总收入(上年)",
+	"PARENT_NETPROFIT":           "归属净利润",
+	"PARENT_NETPROFIT_LAST":      "归属净利润(上年)",
+	"KCFJCXSYJLR":                "扣非净利润",
+	"KCFJCXSYJLR_LAST":           "扣非净利润(上年)",
+	"ROEJQ":                      "ROE(加权)",
+	"ROEJQ_LAST":                 "ROE(加权)(上年)",
+	"XSMLL":                      "销售毛利率",
+	"XSMLL_LAST":                 "销售毛利率(上年)",
+	"ZCFZL":                      "资产负债率",
+	"ZCFZL_LAST":                 "资产负债率(上年)",
+	"YYZSRGDHBZC":                "营收环比增长",
+	"YYZSRGDHBZC_LAST":           "营收环比增长(上年)",
+	"NETPROFITRPHBZC":            "净利润环比增长",
+	"NETPROFITRPHBZC_LAST":       "净利润环比增长(上年)",
+	"KFJLRGDHBZC":                "扣非净利环比增长",
+	"KFJLRGDHBZC_LAST":           "扣非净利环比增长(上年)",
+	"TOTALOPERATEREVETZ":         "营收同比增长",
+	"TOTALOPERATEREVETZ_LAST":    "营收同比增长(上年)",
+	"PARENTNETPROFITTZ":          "净利同比增长",
+	"PARENTNETPROFITTZ_LAST":     "净利同比增长(上年)",
+	"KCFJCXSYJLRTZ":              "扣非净利同比增长",
+	"KCFJCXSYJLRTZ_LAST":         "扣非净利同比增长(上年)",
+	"TOTAL_SHARE":                "总股本",
+	"FREE_SHARE":                 "流通股",
+	"TOTALOPERATEREVE":           "营业总收入",
+	"GROSS_PROFIT":               "毛利润",
+	"PARENTNETPROFIT":            "归属净利润",
+	"DEDU_PARENT_PROFIT":         "扣非净利润",
+	"DPNP_YOY_RATIO":             "扣非净利同比增长",
+	"ROE_DILUTED":                "ROE(摊薄)",
+	"JROA":                       "总资产净利率",
+	"NET_PROFIT_RATIO":           "净利率",
+	"GROSS_PROFIT_RATIO":         "毛利率",
+	"SEASON_LABEL":               "报告期",
+	"PUBLISH_DATE":               "发布日期",
+	"ORG_NAME_ABBR":              "机构简称",
+	"YEAR1":                      "预测年份1",
+	"YEAR_MARK1":                 "标识1",
+	"EPS1":                       "每股收益预测1",
+	"PE1":                        "预测市盈率1",
+	"YEAR2":                      "预测年份2",
+	"YEAR_MARK2":                 "标识2",
+	"EPS2":                       "每股收益预测2",
+	"PE2":                        "预测市盈率2",
+	"YEAR3":                      "预测年份3",
+	"YEAR_MARK3":                 "标识3",
+	"EPS3":                       "每股收益预测3",
+	"PE3":                        "预测市盈率3",
+	"YEAR4":                      "预测年份4",
+	"YEAR_MARK4":                 "标识4",
+	"EPS4":                       "每股收益预测4",
+	"PE4":                        "预测市盈率4",
+	"YEAR":                       "年份",
+	"YEAR_MARK":                  "标识",
+	"EPS":                        "每股收益",
+	"EPS_RATIO":                  "EPS增长率",
+	"PE":                         "市盈率",
+	"ROE":                        "ROE",
+	"RANK":                       "排名",
+	"PARENT_NETPROFIT_RATIO":     "净利润增长率",
+	"TOTAL_OPERATE_INCOME":       "营业总收入",
+	"TOTAL_OPERATE_INCOME_RATIO": "营收增长率",
+	"OPERATE_PROFIT":             "营业利润",
+	"STATISTICS_CYCLE":           "统计周期",
+	"INDEX_TYPE":                 "指标类型",
+	"PERCENTILE_THIRTY":          "30%分位",
+	"PERCENTILE_FIFTY":           "50%分位(中位数)",
+	"PERCENTILE_SEVENTY":         "70%分位",
+	"MARGIN_BALANCE":             "融资融券余额",
 	"MARGIN_BALANCE_RATIO":       "两融余额占比",
-	"FIN_BALANCE":                 "融资余额",
+	"FIN_BALANCE":                "融资余额",
 	"FIN_BALANCE_RATIO":          "融资余额占比",
-	"FIN_BUY_AMT":                 "融资买入额",
-	"FIN_REPAY_AMT":               "融资偿还额",
-	"FIN_NETBUY_AMT":              "融资净买入",
+	"FIN_BUY_AMT":                "融资买入额",
+	"FIN_REPAY_AMT":              "融资偿还额",
+	"FIN_NETBUY_AMT":             "融资净买入",
 	"FIN_TVAL_RATIO":             "融资净买占比",
-	"LOAN_BALANCE":                "融券余额",
+	"LOAN_BALANCE":               "融券余额",
 	"LOAN_BALANCE_RATIO":         "融券余额占比",
-	"LOAN_SELL_VOL":               "融券卖出量",
-	"LOAN_REPAY_VOL":              "融券偿还量",
-	"LOAN_BALANCE_VOL":            "融券余量",
-	"TRADE_DATE":                  "交易日期",
-	"TRADE_YEAR":                  "交易年份",
-	"CHANGE_RATE":                 "涨跌幅",
-	"CLOSE_PRICE":                 "收盘价",
-	"DEAL_PRICE":                  "成交价",
-	"PREMIUM_RATIO":               "溢价率",
-	"DEAL_VOLUME":                 "成交量",
-	"DEAL_AMT":                    "成交额",
-	"BUYER_NAME":                  "买方营业部",
-	"SELLER_NAME":                 "卖方营业部",
-	"BUYER_CODE":                  "买方代码",
-	"SELLER_CODE":                 "卖方代码",
-	"DAILY_RANK":                  "当日排名",
-	"TURNOVER_RATE":               "换手率",
-	"CHANGE_RATE_1DAYS":           "1日涨跌幅",
-	"CHANGE_RATE_5DAYS":           "5日涨跌幅",
-	"CHANGE_RATE_10DAYS":          "10日涨跌幅",
-	"CHANGE_RATE_20DAYS":          "20日涨跌幅",
-	"PREMIUM_TURNOVER":            "溢价成交",
-	"DISCOUNT_TURNOVER":           "折价成交",
-	"UNLIMITED_A_SHARES":          "无限售A股",
-	"TRADE_MARKET_OLD":            "交易市场",
-	"INDICATORTYPE":               "指标类型",
-	"INDICATOR_VALUE":             "指标值",
-	"EXPLANATION":                 "说明",
-	"TOTAL_BUY":                   "买入额",
-	"TOTAL_SELL":                  "卖出额",
-	"TOTAL_BUYRIOTOP":             "买入占比",
-	"TOTAL_SELLRIOTOP":            "卖出占比",
-	"OPERATEDEPT_NAME":            "营业部名称",
-	"BUY_AMT_REAL":                "买入额",
-	"SELL_AMT_REAL":               "卖出额",
-	"BUY_RATIO":                   "买入占比",
-	"SELL_RATIO":                  "卖出占比",
-	"DISCOUNT_RATIO":              "折价率",
-	"ACCUM_AMOUNT":                "累计成交额",
-	"ACCUM_VOLUME":                "累计成交量",
+	"LOAN_SELL_VOL":              "融券卖出量",
+	"LOAN_REPAY_VOL":             "融券偿还量",
+	"LOAN_BALANCE_VOL":           "融券余量",
+	"TRADE_DATE":                 "交易日期",
+	"TRADE_YEAR":                 "交易年份",
+	"CHANGE_RATE":                "涨跌幅",
+	"CLOSE_PRICE":                "收盘价",
+	"DEAL_PRICE":                 "成交价",
+	"PREMIUM_RATIO":              "溢价率",
+	"DEAL_VOLUME":                "成交量",
+	"DEAL_AMT":                   "成交额",
+	"BUYER_NAME":                 "买方营业部",
+	"SELLER_NAME":                "卖方营业部",
+	"BUYER_CODE":                 "买方代码",
+	"SELLER_CODE":                "卖方代码",
+	"DAILY_RANK":                 "当日排名",
+	"TURNOVER_RATE":              "换手率",
+	"CHANGE_RATE_1DAYS":          "1日涨跌幅",
+	"CHANGE_RATE_5DAYS":          "5日涨跌幅",
+	"CHANGE_RATE_10DAYS":         "10日涨跌幅",
+	"CHANGE_RATE_20DAYS":         "20日涨跌幅",
+	"PREMIUM_TURNOVER":           "溢价成交",
+	"DISCOUNT_TURNOVER":          "折价成交",
+	"UNLIMITED_A_SHARES":         "无限售A股",
+	"TRADE_MARKET_OLD":           "交易市场",
+	"INDICATORTYPE":              "指标类型",
+	"INDICATOR_VALUE":            "指标值",
+	"EXPLANATION":                "说明",
+	"TOTAL_BUY":                  "买入额",
+	"TOTAL_SELL":                 "卖出额",
+	"TOTAL_BUYRIOTOP":            "买入占比",
+	"TOTAL_SELLRIOTOP":           "卖出占比",
+	"OPERATEDEPT_NAME":           "营业部名称",
+	"BUY_AMT_REAL":               "买入额",
+	"SELL_AMT_REAL":              "卖出额",
+	"BUY_RATIO":                  "买入占比",
+	"SELL_RATIO":                 "卖出占比",
+	"DISCOUNT_RATIO":             "折价率",
+	"ACCUM_AMOUNT":               "累计成交额",
+	"ACCUM_VOLUME":               "累计成交量",
+	// 公司基础资料 RPT_F10_ORG_BASICINFO 字段（chromedp 抓取 emweb.securities.eastmoney.com/pc_hsf10 公司概况页对照）
+	"ORG_NAME":               "公司全称",
+	"ORG_NAME_EN":            "公司英文名称",
+	"ORG_FORM":               "经营性质",
+	"ORG_PROFILE":            "公司简介(简短)",
+	"ORG_PROFIE":             "公司简介",
+	"MAIN_BUSINESS":          "主营业务",
+	"BUSINESS_SCOPE":         "经营范围",
+	"CHAIRMAN":               "董事长",
+	"LEGAL_PERSON":           "法人代表",
+	"PRESIDENT":              "总经理",
+	"SECRETARY":              "董秘",
+	"SECPRESENT":             "证券事务代表",
+	"INDEDIRECTORS":          "独立董事",
+	"CONTROL_HOLDER":         "控股股东",
+	"CONTROL_DIRECT_RATIO":   "控股直接持股比例",
+	"CONTROL_INDIRECT_RATIO": "控股间接持股比例",
+	"REAL_CONTROLER":         "实际控制人",
+	"REAL_DIRECT_RATIO":      "实控人直接持股比例",
+	"REAL_INDIRECT_RATIO":    "实控人间接持股比例",
+	"FOUND_DATE":             "成立日期",
+	"LISTING_DATE":           "上市日期",
+	"REG_CAPITAL":            "注册资本",
+	"REG_ADDRESS":            "注册地址",
+	"ADDRESS":                "办公地址",
+	"ADDRESS_POSTCODE":       "邮政编码",
+	"REG_NUM":                "工商登记号",
+	"ORG_TEL":                "联系电话",
+	"ORG_FAX":                "传真",
+	"ORG_EMAIL":              "电子信箱",
+	"ORG_WEB":                "公司网址",
+	"TOTAL_NUM":              "雇员人数",
+	"TATOLNUMBER":            "管理人员人数",
+	"ACCOUNT_FIRM":           "会计师事务所",
+	"LEGAL_ADVISER":          "律师事务所",
+	"TRADE_MARKET":           "交易市场",
+	"TRADE_MARKET_ZF":        "上市交易所",
+	"CURRENCY":               "货币币种",
+	"EM2016":                 "东财行业",
+	"CSRC_INDUSTRY_NAME":     "证监会行业",
+	"SWINDUSTRY_NAME2":       "申万行业",
+	"BOARD_NAME_1LEVEL":      "一级行业",
+	"BOARD_NAME_2LEVEL":      "二级行业",
+	"BOARD_NAME_3LEVEL":      "三级行业",
+	"AREA_BOARD_NAME":        "地域板块",
+	"BLGAINIAN":              "概念板块",
+	"REGIONBK":               "所属区域",
+	"PROVINCE":               "省份",
+	"ISSUE_PRICE":            "发行价",
+	"MAXPROFIT_PRODUCT":      "最赚钱产品",
+	"INCOME_STRU_NAME":       "收入构成",
+	"INCOME_STRU_RATIO":      "收入构成占比",
+	"INCOME_STRU_NAMENEW":    "收入构成(新)",
+	"INCOME_STRU_RATIONEW":   "收入构成占比(新)",
+	"PRODUCT_NAME":           "产品名称",
+	"MAX_DATE":               "数据截止日期",
 }
 
 var f10HiddenFields = map[string]bool{
@@ -242,6 +298,53 @@ var f10HiddenFields = map[string]bool{
 	"DISCOUNT_TURNOVER":   true,
 	"UNLIMITED_A_SHARES":  true,
 	"DATETYPE":            true,
+	// 公司基础资料内部字段（代码/拼音/跳转标记等，不展示）
+	"STR_CODEA":            true,
+	"STR_NAMEA":            true,
+	"STR_CODEB":            true,
+	"STR_NAMEB":            true,
+	"STR_CODEH":            true,
+	"STR_NAMEH":            true,
+	"SECUCODE_N":           true,
+	"CORRECODE":            true,
+	"CORRECODE_INNER_CODE": true,
+	"SECURITY_CODE_TYPE":   true,
+	"IS_INNOVATION":        true,
+	"SECURITY_PINYIN":      true,
+	"TRADE_MARKET_CODE":    true,
+	"LISTING_STATE":        true,
+	"ORG_TYPE":             true,
+	"CODE_TYPE":            true,
+	"ORG_TYPE_CODE":        true,
+	"EXPAND_NAME_PINYIN":   true,
+	"EXPAND_NAME_ABBR":     true,
+	"EXPAND_NAME_ABBRN":    true,
+	"BOARD_CODE_BK_1LEVEL": true,
+	"BOARD_CODE_BK_2LEVEL": true,
+	"BOARD_CODE_BK_3LEVEL": true,
+	"BLGAINIAN_CODE":       true,
+	"AREA_BOARD_CODE":      true,
+	"PRODUCT_CODE":         true,
+	"IS_JUMP_CHAIRMAN":     true,
+	"IS_JUMP_LEGALPERSON":  true,
+	"IS_JUMP_PRESIDENT":    true,
+	"IS_JUMP_SECRETARY":    true,
+	"IS_JUMP_CONTROL":      true,
+	"IS_JUMP_REAL":         true,
+	"CONTROL_HOLDER_CODE":  true,
+	"REAL_CONTROLER_CODE":  true,
+	"IS_USE":               true,
+	"SWINDUSTRY_CODE2":     true,
+	"ADD_BUSINESS":         true,
+	"ADD_BUSINESS_RATIO":   true,
+	"HOST_BROKER":          true,
+	"TRANSFER_WAY":         true,
+	"MARKETING_START_DATE": true,
+	"MARKET_MAKER":         true,
+	"TRADE_MARKET_TYPE":    true,
+	// 收入构成旧版字段（与 INCOME_STRU_NAMENEW/RATIONEW 重复，页面用新版）
+	"INCOME_STRU_NAME":  true,
+	"INCOME_STRU_RATIO": true,
 }
 
 var f10PercentFields = map[string]bool{
@@ -271,6 +374,11 @@ var f10PercentFields = map[string]bool{
 	"TOTALOPERATEREVETZ": true, "TOTALOPERATEREVETZ_LAST": true,
 	"PARENTNETPROFITTZ": true, "PARENTNETPROFITTZ_LAST": true,
 	"KCFJCXSYJLRTZ": true, "KCFJCXSYJLRTZ_LAST": true,
+	// 公司基础资料百分比字段
+	"CONTROL_DIRECT_RATIO":   true,
+	"CONTROL_INDIRECT_RATIO": true,
+	"REAL_DIRECT_RATIO":      true,
+	"REAL_INDIRECT_RATIO":    true,
 }
 
 var f10MoneyFields = map[string]bool{
@@ -298,15 +406,18 @@ var f10VolumeFields = map[string]bool{
 var f10PriceFields = map[string]bool{
 	"DEAL_PRICE": true, "CLOSE_PRICE": true, "PRE_CLOSE_PRICE": true,
 	"CLOSE_FORWARD_ADJPRICE": true, "CLOSE_ADJPRICE": true,
+	"ISSUE_PRICE": true,
 }
 
 var f10DateFields = map[string]bool{
 	"REPORT_DATE": true, "TRADE_DATE": true, "PUBLISH_DATE": true,
+	"FOUND_DATE": true, "LISTING_DATE": true, "MAX_DATE": true,
 }
 
 var f10IntegerFields = map[string]bool{
 	"YEAR1": true, "YEAR2": true, "YEAR3": true, "YEAR4": true,
 	"YEAR": true, "RANK": true, "DAILY_RANK": true,
+	"TOTAL_NUM": true, "TATOLNUMBER": true,
 }
 
 var f10LatestFinanceColOrder = []string{
@@ -383,6 +494,29 @@ var f10HolderTrendColOrder = []string{
 	"SECURITY_CODE", "SECURITY_NAME_ABBR", "TRADE_DATE", "INDICATOR_VALUE",
 }
 
+var f10OrgBasicInfoColOrder = []string{
+	"SECURITY_CODE", "SECURITY_NAME_ABBR", "ORG_NAME", "ORG_NAME_EN", "FORMERNAME",
+	"SECURITY_TYPE", "ORG_FORM", "CURRENCY",
+	"EM2016", "CSRC_INDUSTRY_NAME", "SWINDUSTRY_NAME2",
+	"BOARD_NAME_1LEVEL", "BOARD_NAME_2LEVEL", "BOARD_NAME_3LEVEL",
+	"AREA_BOARD_NAME", "BLGAINIAN", "REGIONBK", "PROVINCE",
+	"TRADE_MARKET_ZF", "TRADE_MARKET",
+	"LISTING_DATE", "FOUND_DATE", "ISSUE_PRICE",
+	"CHAIRMAN", "LEGAL_PERSON", "PRESIDENT", "SECRETARY",
+	"SECPRESENT", "INDEDIRECTORS",
+	"CONTROL_HOLDER", "CONTROL_DIRECT_RATIO", "CONTROL_INDIRECT_RATIO",
+	"REAL_CONTROLER", "REAL_DIRECT_RATIO", "REAL_INDIRECT_RATIO",
+	"MAXPROFIT_PRODUCT", "GROSS_PROFIT_RATIO",
+	"INCOME_STRU_NAMENEW", "INCOME_STRU_RATIONEW",
+	"PRODUCT_NAME", "MAIN_BUSINESS", "ORG_PROFILE", "ORG_PROFIE", "BUSINESS_SCOPE",
+	"TOTAL_NUM", "TATOLNUMBER",
+	"ORG_TEL", "ORG_FAX", "ORG_EMAIL", "ORG_WEB",
+	"ADDRESS", "REG_ADDRESS", "ADDRESS_POSTCODE",
+	"REG_CAPITAL", "REG_NUM",
+	"ACCOUNT_FIRM", "LEGAL_ADVISER",
+	"MAX_DATE",
+}
+
 func f10FieldNameCN(name string) string {
 	if cn, ok := f10FieldCN[name]; ok {
 		return cn
@@ -457,6 +591,9 @@ func f10FormatNumber(key string, val float64) string {
 		return fmt.Sprintf("%.2f", val)
 	case "PE1", "PE2", "PE3", "PE4", "PE", "ROE":
 		return fmt.Sprintf("%.2f", val)
+	case "REG_CAPITAL":
+		// 注册资本单位为万元，转为亿元显示
+		return fmt.Sprintf("%.2f亿元", val/1e4)
 	default:
 		if val == float64(int64(val)) {
 			return strconv.FormatInt(int64(val), 10)
@@ -668,6 +805,37 @@ func (receiver StockDataApi) GetStockOperationDeptTrade(stockCode string) (*F10G
 	return &data, nil
 }
 
+// GetStockOrgBasicInfo 获取公司基础资料（东方财富F10 RPT_F10_ORG_BASICINFO），
+// 包含公司全称/英文名、上市交易所、所属行业、高管、控股股东及实控人持股比例、
+// 注册资本、主营业务、经营范围、联系方式、概念板块等。字段含义对照
+// emweb.securities.eastmoney.com/pc_hsf10 公司概况页（chromedp 抓取 .jbzl_table）。
+func (receiver StockDataApi) GetStockOrgBasicInfo(stockCode string) (*F10GenericResp, error) {
+	stockCode = normalizeF10Code(stockCode)
+	url := emF10BaseURL + "?reportName=RPT_F10_ORG_BASICINFO&columns=ALL&quoteColumns=&filter=(SECUCODE%3D%22" + stockCode + "%22)&pageNumber=1&pageSize=1&sortTypes=&sortColumns=&source=HSF10&client=PC&v=" + convertor.ToString(time.Now().Unix())
+	var data F10GenericResp
+	err := receiver.f10Request(url, &data)
+	if err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+// GetStockOrgBasicInfoToMarkdown 将公司基础资料渲染为 Markdown 表格。
+func (receiver StockDataApi) GetStockOrgBasicInfoToMarkdown(stockCode string) string {
+	resp, err := receiver.GetStockOrgBasicInfo(stockCode)
+	if err != nil {
+		logger.SugaredLogger.Errorf("获取公司基础资料失败: %v", err)
+		return fmt.Sprintf("获取公司基础资料失败: %v", err)
+	}
+	name := ""
+	if resp != nil && resp.Result != nil && len(resp.Result.Data) > 0 {
+		if n, ok := resp.Result.Data[0]["SECURITY_NAME_ABBR"].(string); ok {
+			name = n
+		}
+	}
+	return f10GenericToMarkdownOrdered(name+" 公司基础资料", resp, f10OrgBasicInfoColOrder)
+}
+
 func (receiver StockDataApi) GetStockLatestFinanceToMarkdown(stockCode string) string {
 	resp, err := receiver.GetStockLatestFinance(stockCode)
 	if err != nil {
@@ -681,6 +849,199 @@ func (receiver StockDataApi) GetStockLatestFinanceToMarkdown(stockCode string) s
 		}
 	}
 	return f10GenericToMarkdownOrdered(name+" 最新财务主要数据", resp, f10LatestFinanceColOrder)
+}
+
+// HKF10MainIndicatorResp 东方财富港股F10主要指标接口响应。
+// 数据结构为二维数组（rows × cols），每行第一项为日期/分组名，其余为指标值。
+// 接口示例：http://emweb.securities.eastmoney.com/PC_HKF10/NewFinancialAnalysis/GetZYZB?code=00700
+// 返回 data 含两个键：zyzb_an（年度，仅年报）和 zyzb_abgq（报告期，全部季度）。
+// 每个二维数组首行为列头（含 "每股指标"/"成长能力指标"/"盈利能力指标"/"盈利质量指标"/"财务风险指标" 等分组列），
+// 数据行的对应列重复出现同一日期，渲染时需折叠为单一日期列。
+type HKF10MainIndicatorResp struct {
+	Status int               `json:"status"`
+	Msg    string            `json:"msg"`
+	Data   *HKF10MainIndData `json:"data"`
+}
+
+type HKF10MainIndData struct {
+	Abgq [][]string `json:"zyzb_abgq"` // 报告期（全部季度，最新在前）
+	An   [][]string `json:"zyzb_an"`   // 年度（仅年报，最新在前）
+}
+
+// normalizeHKF10Code 港股代码归一化为 EastMoney HKF10 接口所需的纯数字 code（如 00700）。
+// 支持 00700.HK / hk00700 / HK00700 / 00700 等格式。
+func normalizeHKF10Code(stockCode string) string {
+	code := strings.TrimSpace(stockCode)
+	upper := strings.ToUpper(code)
+	// 去 .HK 后缀（不区分大小写）
+	if strings.HasSuffix(upper, ".HK") {
+		code = code[:len(code)-3]
+		upper = strings.ToUpper(code)
+	}
+	// 去 HK 前缀（不区分大小写）
+	if strings.HasPrefix(upper, "HK") {
+		code = code[2:]
+	}
+	// 仅保留数字，再左侧补零到 5 位
+	code = RemoveAllNonDigitChar(code)
+	if len(code) < 5 {
+		code = strings.Repeat("0", 5-len(code)) + code
+	}
+	return code
+}
+
+// GetHKStockLatestFinance 获取港股最新财务主要指标（东方财富 HKF10 接口）。
+// 返回报告期数据（zyzb_abgq），最新季度排在最前；若需要年度数据请使用 GetHKStockAnnualFinance。
+// 仅适用于港股（.HK 后缀，如 00700.HK 腾讯控股）。A股请使用 GetStockLatestFinance。
+func (receiver StockDataApi) GetHKStockLatestFinance(stockCode string) (*HKF10MainIndicatorResp, error) {
+	code := normalizeHKF10Code(stockCode)
+	url := "http://emweb.securities.eastmoney.com/PC_HKF10/NewFinancialAnalysis/GetZYZB?code=" + code
+	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+		SetHeader("Referer", "https://emweb.securities.eastmoney.com/").
+		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0").
+		Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %v", err)
+	}
+	if resp.StatusCode() != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode())
+	}
+	var data HKF10MainIndicatorResp
+	if err := json.Unmarshal(resp.Body(), &data); err != nil {
+		return nil, fmt.Errorf("parse failed: %v", err)
+	}
+	if data.Status != 1 {
+		return &data, fmt.Errorf("获取港股财务数据失败: %s", data.Msg)
+	}
+	return &data, nil
+}
+
+// GetHKStockLatestFinanceToMarkdown 港股最新财务主要指标渲染为 Markdown 表格。
+// 输出最新一期与去年同期两列，便于直观对比同比变化。
+func (receiver StockDataApi) GetHKStockLatestFinanceToMarkdown(stockCode string) string {
+	code := normalizeHKF10Code(stockCode)
+	resp, err := receiver.GetHKStockLatestFinance(stockCode)
+	if err != nil {
+		logger.SugaredLogger.Errorf("获取港股最新财务数据失败(code=%s): %v", code, err)
+		return fmt.Sprintf("获取港股最新财务数据失败: %v", err)
+	}
+	return hkF10MainIndicatorToMarkdown(stockCode+" 港股最新财务主要指标", resp, true)
+}
+
+// GetHKStockAnnualFinanceToMarkdown 港股年度财务主要指标渲染为 Markdown 表格。
+// 输出最近 5 个年度数据，便于查看长期趋势。
+func (receiver StockDataApi) GetHKStockAnnualFinanceToMarkdown(stockCode string) string {
+	code := normalizeHKF10Code(stockCode)
+	resp, err := receiver.GetHKStockLatestFinance(stockCode)
+	if err != nil {
+		logger.SugaredLogger.Errorf("获取港股年度财务数据失败(code=%s): %v", code, err)
+		return fmt.Sprintf("获取港股年度财务数据失败: %v", err)
+	}
+	return hkF10MainIndicatorToMarkdown(stockCode+" 港股年度财务主要指标", resp, false)
+}
+
+// hkF10IndicatorRow HK F10 指标表的一行（指标名 + 各期数值）。
+type hkF10IndicatorRow struct {
+	Name string
+	Vals []string
+}
+
+// hkF10MainIndicatorToMarkdown 将 HK F10 主要指标二维数组渲染为 Markdown 表格。
+// useLatest=true 时使用 zyzb_abgq 最新 2 期（最新 + 去年同期），便于同比对比；
+// useLatest=false 时使用 zyzb_an 最近 5 个年度，便于长期趋势分析。
+//
+// 数据结构说明：HK F10 接口返回的二维数组首行为列头，含 5 个分组标记列：
+//
+//	位置 0  "每股指标"      -> 后续 6 列：基本/稀释/TTM EPS、每股净资产/经营现金流/营业收入
+//	位置 7  "成长能力指标"   -> 后续 8 列：营收/毛利/归母净利、3 项同比、3 项滚动环比
+//	位置 17 "盈利能力指标"   -> 后续 6 列：平均/年化 ROE、总资产净利率、毛利率、净利率、投资回报率
+//	位置 24 "盈利质量指标"   -> 后续 2 列：所得税/利润总额、经营现金流/营业收入
+//	位置 27 "财务风险指标"   -> 后续 3 列：资产负债率、流动负债/总负债、流动比率
+//
+// 数据行中这 5 个位置均为同一日期（如 "25-12-31"），渲染时折叠为单一日期列。
+func hkF10MainIndicatorToMarkdown(title string, resp *HKF10MainIndicatorResp, useLatest bool) string {
+	if resp == nil || resp.Data == nil {
+		return fmt.Sprintf("## %s\n\n暂无数据", title)
+	}
+	var rows [][]string
+	if useLatest {
+		rows = resp.Data.Abgq
+	} else {
+		rows = resp.Data.An
+	}
+	if len(rows) < 2 {
+		return fmt.Sprintf("## %s\n\n暂无数据", title)
+	}
+
+	// 选择要展示的列：最新一期；如为报告期模式则再选去年同期对比
+	headerRow := rows[0]
+	dataRows := rows[1:]
+	// 数据按日期降序排列（最新在前），选取最新 N 期
+	maxCols := 5
+	if useLatest {
+		maxCols = 2
+	}
+	if len(dataRows) > maxCols {
+		dataRows = dataRows[:maxCols]
+	}
+
+	// 5 个分组标记列的索引
+	groupMarkIdx := map[int]bool{0: true, 7: true, 17: true, 24: true, 27: true}
+	// 构建指标行：跳过分组标记列，将其作为分组标题行插入
+	var indicatorRows []hkF10IndicatorRow
+	currentGroup := ""
+	for colIdx := 0; colIdx < len(headerRow); colIdx++ {
+		hdr := headerRow[colIdx]
+		if groupMarkIdx[colIdx] {
+			currentGroup = hdr
+			// 第一列 "每股指标" 分组名特殊处理：保持为 "基本指标"
+			if currentGroup == "每股指标" {
+				currentGroup = "基本指标"
+			}
+			continue
+		}
+		row := hkF10IndicatorRow{
+			Name: fmt.Sprintf("%s · %s", currentGroup, hdr),
+		}
+		for _, dr := range dataRows {
+			if colIdx < len(dr) {
+				row.Vals = append(row.Vals, dr[colIdx])
+			} else {
+				row.Vals = append(row.Vals, "--")
+			}
+		}
+		indicatorRows = append(indicatorRows, row)
+	}
+
+	// 收集日期作为表头（取自每行的第 0 列，即 "每股指标" 分组下对应的日期）
+	var dateHeaders []string
+	for _, dr := range dataRows {
+		if len(dr) > 0 {
+			dateHeaders = append(dateHeaders, dr[0])
+		} else {
+			dateHeaders = append(dateHeaders, "--")
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## %s\n\n", title))
+	sb.WriteString("| 指标 |")
+	for _, d := range dateHeaders {
+		sb.WriteString(" " + d + " |")
+	}
+	sb.WriteString("\n| --- |")
+	for range dateHeaders {
+		sb.WriteString(" --- |")
+	}
+	sb.WriteString("\n")
+	for _, r := range indicatorRows {
+		sb.WriteString(fmt.Sprintf("| %s |", r.Name))
+		for _, v := range r.Vals {
+			sb.WriteString(" " + v + " |")
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 func (receiver StockDataApi) GetStockQtrMainFinanceToMarkdown(stockCode string) string {

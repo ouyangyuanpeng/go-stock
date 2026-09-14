@@ -2,25 +2,43 @@
 import {computed, h, nextTick, onBeforeMount, onBeforeUnmount, onMounted, reactive, ref, watch} from 'vue'
 import * as echarts from 'echarts';
 import {
+  AddConcept,
   AddGroup,
+  AddStockConcept,
   AddStockGroup,
   Follow,
   GetAiConfigs,
   GetAIResponseResult,
+  GetAllGroupStocks,
+  GetAllStockConcepts,
+  GetConceptList,
   GetConfig,
   GetEffectiveSponsorVip,
   GetFollowList,
   GetGroupList,
   GetPromptTemplates,
+  GetStockConceptsByStockCode,
   GetStockKLine,
   GetStockList,
   GetStockMinutePriceLineData,
+  GetTdxMinuteTimeData,
+  GetHistoryTdxMinuteTimeData,
+  GetTdxTransactionData,
+  GetAllTdxTransactionData,
+  GetHistoryTdxTransactionData,
+  RefreshAllTdxTransactionData,
+  RefreshHistoryTdxTransactionData,
+  GetLatestTradingDay,
+  IsTradingDay,
+  GetStockRealTimePrice,
   GetVersionInfo,
   Greet,
   InitializeGroupSort,
   NewChatStream,
   OpenURL,
+  RemoveConcept,
   RemoveGroup,
+  RemoveStockConcept,
   RemoveStockGroup,
   RestartAsAdmin,
   SaveAIResponseResult,
@@ -35,16 +53,23 @@ import {
   SetTradingPrice,
   ShareAnalysis,
   UnFollow,
+  UpdateConcept,
   UpdateGroup,
   UpdateGroupSort
 } from '../../wailsjs/go/main/App'
 import {
   NAvatar,
   NButton,
+  NButtonGroup,
+  NDataTable,
+  NDatePicker,
+  NDropdown,
   NFlex,
   NForm,
   NFormItem,
   NInputNumber,
+  NSelect,
+  NTag,
   NText,
   useDialog,
   useMessage,
@@ -108,6 +133,19 @@ const results = ref({})
 const stockList = ref([])
 const followList = ref([])
 const groupList = ref([])
+// 股票代码 -> 所属分组名数组（用于「全部」标签页表格的分组列渲染）
+const codeToGroupNames = ref(new Map())
+// 股票代码 -> 所属分组 ID 数组（用于「全部」标签页表格的分组条件筛选，按 ID 匹配避免重名）
+const codeToGroupIds = ref(new Map())
+const conceptList = ref([])
+// 股票代码 -> 所属概念名数组（用于「全部」标签页表格的概念列渲染）
+const codeToConceptNames = ref(new Map())
+// 股票代码 -> 所属概念 ID 数组（用于「全部」标签页表格的概念条件筛选与下拉勾选判断）
+const codeToConceptIds = ref(new Map())
+// 概念筛选：0 表示不按概念筛选
+const tableConceptFilter = ref(0)
+// 「设置概念」时新建概念后待加入的股票（null 表示非设置概念流程打开的概念弹窗）
+const pendingAddStockConcept = ref(null)
 const options = ref([])
 const modalShow = ref(false)
 const modalShow2 = ref(false)
@@ -115,8 +153,268 @@ const modalShow3 = ref(false)
 const modalShow4 = ref(false)
 const modalShow5 = ref(false)
 const modalShow6 = ref(false)
+const modalShow7 = ref(false)
 const lwKlineCode = ref('')
 const lwKlineName = ref('')
+// gotdx 分时明细弹窗状态
+const tdxMinuteBundle = ref(null)  // TdxMinuteTimeDataBundle
+const tdxMinuteBundleList = ref([]) // 多日模式：[{ dateStr, bundle }]
+const tdxTransactionList = ref([]) // []TdxTransactionData
+const tdxTransactionLoading = ref(false)
+const tdxTransactionChartRef = ref(null)
+const tdxTransactionChart = ref(null)
+// 实时价格与涨跌幅（弹窗打开时轮询刷新）
+const tdxRealTimeInfo = ref({ price: 0, preClose: 0, changePercent: 0 })
+// 自动刷新开关与定时器（仅交易日盘中 + 选中范围含今天时生效）
+const tdxAutoRefresh = ref(true)
+let tdxAutoRefreshTimer = null
+// 大单过滤（按成交金额 = 价格 × 成交量 分档，参考东方财富标准）
+// 0=全部 1=超大单(≥100万) 2=大单(20-100万) 3=中单(4-20万) 4=小单(<4万)
+const tdxAmountFilter = ref(0)
+// 日期范围选择：默认今天 [start, end]（时间戳，单位毫秒，NDatePicker daterange 要求）
+// 单日选择时 start === end（按天对齐），多日选择时为闭区间 [start, end]
+const tdxSelectedDateRange = ref([startOfTodayTs(), startOfTodayTs()])
+// 禁选未来日期
+const tdxDateDisabled = (ts) => ts > Date.now()
+// 将时间戳对齐到当日 00:00:00（避免 daterange 默认携带 12:00 导致 isToday 判断偏差）
+function startOfTodayTs() {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+function startOfDayTs(ts) {
+  const d = new Date(ts)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+// 格式化日期为 "YYYY-MM-DD"
+function formatTdxDate(ts) {
+  const d = new Date(ts)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+function isToday(ts) {
+  return formatTdxDate(ts) === formatTdxDate(Date.now())
+}
+// 今天是否为交易日（通过后端 IsTradingDay 接口查询，使用 timor.tech 节假日 API 准确判断）
+// showTransactionDetail 时初始化，供 shouldUseCurrentDayApi 同步使用
+const todayIsTradingDay = ref(true)
+async function refreshTodayTradingDayStatus() {
+  try {
+    const todayStr = formatTdxDate(Date.now())
+    todayIsTradingDay.value = await IsTradingDay(todayStr)
+  } catch {
+    // API 失败时 fallback 到周末判断
+    const d = new Date()
+    const day = d.getDay()
+    todayIsTradingDay.value = day !== 0 && day !== 6
+  }
+}
+// 是否应走当日实时接口：仅当为今天且今天为交易日时才走当日接口，
+// 否则走历史接口（非交易日返回空，避免拿到上一交易日数据标记为今天）
+function shouldUseCurrentDayApi(ts) {
+  return isToday(ts) && todayIsTradingDay.value
+}
+// 判断当前选中的日期范围是否跨多天（按日粒度比较 start 与 end）
+const tdxIsMultiDay = computed(() => {
+  const [s, e] = tdxSelectedDateRange.value || []
+  if (s == null || e == null) return false
+  return formatTdxDate(s) !== formatTdxDate(e)
+})
+// 枚举 [startTs, endTs] 闭区间内的所有日期（按日粒度），返回 [{ ts, dateStr, isToday }]
+function enumerateDateRange(startTs, endTs) {
+  const result = []
+  const s = startOfDayTs(startTs)
+  const e = startOfDayTs(endTs)
+  if (s > e) return result
+  const oneDay = 24 * 60 * 60 * 1000
+  for (let t = s; t <= e; t += oneDay) {
+    result.push({ ts: t, dateStr: formatTdxDate(t), isToday: shouldUseCurrentDayApi(t) })
+  }
+  return result
+}
+// 快捷选择「近 N 日」：终点优先选今天（交易日时），否则选最近交易日
+function selectRecentDays(n) {
+  if (!n || n < 1) return
+  const oneDay = 24 * 60 * 60 * 1000
+  if (todayIsTradingDay.value) {
+    // 今天是交易日，以今天为终点
+    const endTs = startOfTodayTs()
+    const startTs = endTs - (n - 1) * oneDay
+    onTdxDateRangeChange([startTs, endTs])
+    return
+  }
+  // 今天非交易日，以最近交易日为终点
+  GetLatestTradingDay().then(latestDay => {
+    const endTs = startOfDayTs(new Date(latestDay.replace(/-/g, '/')).getTime())
+    const startTs = endTs - (n - 1) * oneDay
+    onTdxDateRangeChange([startTs, endTs])
+  }).catch(() => {
+    const endTs = startOfTodayTs()
+    const startTs = endTs - (n - 1) * oneDay
+    onTdxDateRangeChange([startTs, endTs])
+  })
+}
+// 当前快捷按钮高亮：若选中范围恰好是「近 N 日」则返回 N，否则 null
+const tdxActiveQuickDays = computed(() => {
+  const range = tdxSelectedDateRange.value || []
+  if (!range || range.length < 2 || range[0] == null || range[1] == null) return null
+  // 仅判断跨度是否恰好为 N 天（不再要求终点为今天，因非交易日终点为最近交易日）
+  const diffDays = Math.round((startOfDayTs(range[1]) - startOfDayTs(range[0])) / (24 * 60 * 60 * 1000)) + 1
+  return [3, 5, 10, 20, 30].includes(diffDays) ? diffDays : null
+})
+const tdxAmountFilterOptions = [
+  { label: '全部', value: 0 },
+  { label: '超大单(≥100万)', value: 1 },
+  { label: '大单(20-100万)', value: 2 },
+  { label: '中单(4-20万)', value: 3 },
+  { label: '小单(<4万)', value: 4 }
+]
+const SUPER_LARGE = 1000000   // 100万
+const LARGE = 200000          // 20万
+const MEDIUM = 40000          // 4万
+// gotdx 返回的 vol 单位为「手」（1 手 = 100 股），金额 = 价格 × 手数 × 100
+const SHARE_PER_LOT = 100
+function transactionAmount(row) {
+  return (row.price || 0) * (row.vol || 0) * SHARE_PER_LOT
+}
+function classifyAmount(amount) {
+  if (amount >= SUPER_LARGE) return 1  // 超大单
+  if (amount >= LARGE) return 2       // 大单
+  if (amount >= MEDIUM) return 3      // 中单
+  return 4                             // 小单
+}
+function amountTagType(level) {
+  switch (level) {
+    case 1: return 'error'     // 超大单-红
+    case 2: return 'warning'   // 大单-橙
+    case 3: return 'info'      // 中单-蓝
+    case 4: return 'default'   // 小单-灰
+    default: return 'default'
+  }
+}
+function amountTagName(level) {
+  switch (level) {
+    case 1: return '超大'
+    case 2: return '大'
+    case 3: return '中'
+    case 4: return '小'
+    default: return ''
+  }
+}
+// 按过滤条件筛选后的成交明细（表格展示用，倒序：最新成交在前）
+// tdxTransactionList 保持升序（从早到晚）供折线图累计使用，表格仅展示层面反转
+const filteredTdxTransactionList = computed(() => {
+  const filtered = tdxAmountFilter.value === 0
+    ? tdxTransactionList.value
+    : tdxTransactionList.value.filter(row => {
+        const amount = transactionAmount(row)
+        return classifyAmount(amount) === tdxAmountFilter.value
+      })
+  return [...filtered].reverse()
+})
+// 各档位统计：买卖方向笔数/金额/占比 + 净流入金额
+const tdxAmountStats = computed(() => {
+  const stats = [
+    { level: 1, name: '超大单', buyCount: 0, sellCount: 0, neutralCount: 0, buyAmount: 0, sellAmount: 0, neutralAmount: 0, netInflow: 0, totalAmount: 0, buyPercent: 0, sellPercent: 0, neutralPercent: 0 },
+    { level: 2, name: '大单',   buyCount: 0, sellCount: 0, neutralCount: 0, buyAmount: 0, sellAmount: 0, neutralAmount: 0, netInflow: 0, totalAmount: 0, buyPercent: 0, sellPercent: 0, neutralPercent: 0 },
+    { level: 3, name: '中单',   buyCount: 0, sellCount: 0, neutralCount: 0, buyAmount: 0, sellAmount: 0, neutralAmount: 0, netInflow: 0, totalAmount: 0, buyPercent: 0, sellPercent: 0, neutralPercent: 0 },
+    { level: 4, name: '小单',   buyCount: 0, sellCount: 0, neutralCount: 0, buyAmount: 0, sellAmount: 0, neutralAmount: 0, netInflow: 0, totalAmount: 0, buyPercent: 0, sellPercent: 0, neutralPercent: 0 }
+  ]
+  for (const row of tdxTransactionList.value) {
+    const amount = transactionAmount(row)
+    const s = stats[classifyAmount(amount) - 1]
+    if (row.buyOrSell === 0) { s.buyCount++; s.buyAmount += amount }
+    else if (row.buyOrSell === 1) { s.sellCount++; s.sellAmount += amount }
+    else { s.neutralCount++; s.neutralAmount += amount }
+  }
+  for (const s of stats) {
+    s.totalAmount = s.buyAmount + s.sellAmount + s.neutralAmount
+    s.netInflow = s.buyAmount - s.sellAmount
+    s.buyPercent = s.totalAmount > 0 ? (s.buyAmount / s.totalAmount * 100) : 0
+    s.sellPercent = s.totalAmount > 0 ? (s.sellAmount / s.totalAmount * 100) : 0
+    s.neutralPercent = s.totalAmount > 0 ? (s.neutralAmount / s.totalAmount * 100) : 0
+  }
+  return stats
+})
+// 各档位累计净流入金额序列（按时间顺序累计，用于折线图）
+// 多日模式下 x 轴使用 "MM-DD HH:MM" 区分日期，单日模式仅 "HH:MM:SS"
+const tdxNetInflowSeries = computed(() => {
+  const cumulative = [0, 0, 0, 0]
+  const xData = []
+  const series = [[], [], [], []]
+  const multi = tdxIsMultiDay.value
+  for (const row of tdxTransactionList.value) {
+    const amount = transactionAmount(row)
+    const idx = classifyAmount(amount) - 1
+    if (row.buyOrSell === 0) cumulative[idx] += amount
+    else if (row.buyOrSell === 1) cumulative[idx] -= amount
+    if (multi && row.dateStr) {
+      // dateStr "YYYY-MM-DD" → "MM-DD"，与 time 拼成 "MM-DD HH:MM:SS"
+      const parts = row.dateStr.split('-')
+      const md = parts.length === 3 ? `${parts[1]}-${parts[2]}` : row.dateStr
+      xData.push(`${md} ${row.time || ''}`)
+    } else {
+      xData.push(row.time)
+    }
+    for (let i = 0; i < 4; i++) series[i].push(cumulative[i])
+  }
+  return { xData, series }
+})
+const tdxNetInflowChartRef = ref(null)
+const tdxNetInflowChart = ref(null)
+function formatWan(v) {
+  return (v / 10000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
+const tdxTransactionPagination = ref({
+  page: 1,
+  pageSize: 50,
+  showSizePicker: true,
+  pageSizes: [50, 100, 200, 500],
+  itemCount: 0,
+  onChange: (page) => { tdxTransactionPagination.value.page = page },
+  onUpdatePageSize: (pageSize) => {
+    tdxTransactionPagination.value.pageSize = pageSize
+    tdxTransactionPagination.value.page = 1
+  }
+})
+// 表格列：多日模式下在「时间」列前插入「日期」列
+const tdxTransactionColumns = computed(() => {
+  const base = []
+  if (tdxIsMultiDay.value) {
+    base.push({ title: '日期', key: 'dateStr', width: 110, fixed: 'left' })
+  }
+  base.push({ title: '时间', key: 'time', width: 100, fixed: 'left' })
+  base.push({ title: '价格', key: 'price', width: 90, align: 'right' })
+  base.push({ title: '成交量(手)', key: 'vol', width: 110, align: 'right' })
+  base.push({
+    title: '金额(元)', key: 'amount', width: 180, align: 'right',
+    render(row) {
+      const amount = transactionAmount(row)
+      const level = classifyAmount(amount)
+      return h('div', { style: 'display:flex; align-items:center; justify-content:flex-end; gap:6px;' }, [
+        h('span', {}, amount.toLocaleString('zh-CN', { maximumFractionDigits: 2 })),
+        h(NTag, { type: amountTagType(level), size: 'small', bordered: false, style: 'min-width:36px; text-align:center;' }, { default: () => amountTagName(level) })
+      ])
+    }
+  })
+  base.push({ title: '笔数', key: 'num', width: 70, align: 'right' })
+  base.push({
+    title: '方向', key: 'action', width: 80, align: 'center',
+    render(row) {
+      if (row.buyOrSell === 0) {
+        return h(NTag, { type: 'error', size: 'small', bordered: false }, { default: () => '买' })
+      }
+      if (row.buyOrSell === 1) {
+        return h(NTag, { type: 'success', size: 'small', bordered: false }, { default: () => '卖' })
+      }
+      return h(NTag, { type: 'default', size: 'small', bordered: false }, { default: () => '中性' })
+    }
+  })
+  return base
+})
 const currentStockTradingPrice = ref({
   stockCode: '',
   costPrice: 0,
@@ -183,6 +481,11 @@ const danmakuColor = computed(() => {
   return data.darkTheme ? 'color:#fff' : 'color:#000'
 })
 
+// 顶部页签固定吸顶时的背景色（与页面 body 背景一致，避免滚动时内容透出）
+const tabNavBgColor = computed(() => {
+  return data.darkTheme ? 'rgb(16, 16, 20)' : '#ffffff'
+})
+
 const icon = ref('https://raw.githubusercontent.com/ArvinLovegood/go-stock/master/build/appicon.png');
 
 const sortedResults = computed(() => {
@@ -209,6 +512,234 @@ const groupResults = computed(() => {
   }
   return group
 })
+
+// ——「全部」标签页：表格分页 + 搜索 ——
+const tableSearchKeyword = ref('')
+// 「全部」标签页分组筛选：0 表示不按分组筛选，>0 为选中分组 ID
+const tableGroupFilter = ref(0)
+
+// 将 sortedResults 对象转为数组，并按关键字（名称/代码）+ 分组/概念条件过滤
+const allTableData = computed(() => {
+  const arr = []
+  for (const key in sortedResults.value) {
+    arr.push(sortedResults.value[key])
+  }
+  // 分组条件过滤：选中分组 ID > 0 时，只保留属于该分组的股票
+  const gid = tableGroupFilter.value
+  let filtered = gid > 0
+    ? arr.filter(item => (codeToGroupIds.value.get(item['股票代码']) || []).includes(gid))
+    : arr
+  // 概念条件过滤：选中概念 ID > 0 时，只保留属于该概念的股票
+  const cid = tableConceptFilter.value
+  if (cid > 0) {
+    filtered = filtered.filter(item => (codeToConceptIds.value.get(item['股票代码']) || []).includes(cid))
+  }
+  // 关键字过滤（名称/代码）
+  const kw = tableSearchKeyword.value.trim().toLowerCase()
+  if (!kw) return filtered
+  return filtered.filter(item => {
+    const name = String(item['股票名称'] || '').toLowerCase()
+    const code = String(item['股票代码'] || '').toLowerCase()
+    return name.includes(kw) || code.includes(kw)
+  })
+})
+
+// 分组筛选下拉选项：首项为「全部分组」，其余来自 groupList
+const groupFilterOptions = computed(() => {
+  const opts = [{ label: '全部分组', value: 0 }]
+  for (const g of groupList.value) {
+    if (g && g.ID) opts.push({ label: g.name, value: g.ID })
+  }
+  return opts
+})
+
+// 概念筛选下拉选项：首项为「全部概念」，其余来自 conceptList
+const conceptFilterOptions = computed(() => {
+  const opts = [{ label: '全部概念', value: 0 }]
+  for (const c of conceptList.value) {
+    if (c && c.ID) opts.push({ label: c.name, value: c.ID })
+  }
+  return opts
+})
+
+// 客户端分页配置
+const allTablePagination = reactive({
+  page: 1,
+  pageSize: 50,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  prefix({ itemCount }) {
+    return `共 ${itemCount} 只`
+  },
+  onChange: (page) => { allTablePagination.page = page },
+  onUpdatePageSize: (pageSize) => {
+    allTablePagination.pageSize = pageSize
+    allTablePagination.page = 1
+  }
+})
+
+// 搜索关键字变化时回到第一页
+watch(tableSearchKeyword, () => { allTablePagination.page = 1 })
+
+// 分组筛选变化时回到第一页
+watch(tableGroupFilter, () => { allTablePagination.page = 1 })
+
+// 概念筛选变化时回到第一页
+watch(tableConceptFilter, () => { allTablePagination.page = 1 })
+
+// 「全部」标签页表格列定义（render 用 h()；行高频刷新由 allTableData computed 驱动，与原卡片一致）
+const allTableColumns = [
+  {
+    title: '名称/代码', key: '股票名称', width: 150,
+    sorter: (a, b) => String(a['股票名称']).localeCompare(String(b['股票名称'])),
+    render(row) {
+      return h('div', { style: 'display:flex; flex-direction:column; line-height:1.3;' }, [
+        h(NText, { type: row.type, strong: true }, { default: () => row['股票名称'] }),
+        h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row['股票代码'] })
+      ])
+    }
+  },
+  {
+    title: '分组', key: 'groups', width: 140,
+    // 排序按分组名拼接（无分组排最后）
+    sorter: (a, b) => {
+      const ga = (codeToGroupNames.value.get(a['股票代码']) || []).map(g => g.name).join(',')
+      const gb = (codeToGroupNames.value.get(b['股票代码']) || []).map(g => g.name).join(',')
+      if (!ga && !gb) return 0
+      if (!ga) return 1
+      if (!gb) return -1
+      return ga.localeCompare(gb)
+    },
+    render(row) {
+      const groups = codeToGroupNames.value.get(row['股票代码']) || []
+      if (groups.length === 0) {
+        return h(NText, { depth: 3, style: 'font-size:12px;' }, { default: () => '—' })
+      }
+      // 点击具体分组名跳转到对应分组页签
+      return h('div', { style: 'display:flex; flex-wrap:wrap; gap:2px;' },
+        groups.map(g => h(NTag, {
+          size: 'small', bordered: false, type: 'success',
+          style: 'cursor:pointer;',
+          onClick: () => updateTab(String(g.id))
+        }, { default: () => g.name }))
+      )
+    }
+  },
+  {
+    title: '概念', key: 'concepts', width: 140,
+    // 排序按概念名拼接（无概念排最后）
+    sorter: (a, b) => {
+      const ca = (codeToConceptNames.value.get(a['股票代码']) || []).map(c => c.name).join(',')
+      const cb = (codeToConceptNames.value.get(b['股票代码']) || []).map(c => c.name).join(',')
+      if (!ca && !cb) return 0
+      if (!ca) return 1
+      if (!cb) return -1
+      return ca.localeCompare(cb)
+    },
+    render(row) {
+      const concepts = codeToConceptNames.value.get(row['股票代码']) || []
+      if (concepts.length === 0) {
+        return h(NText, { depth: 3, style: 'font-size:12px;' }, { default: () => '—' })
+      }
+      // 仅展示，不可点击跳转（概念无页签）
+      return h('div', { style: 'display:flex; flex-wrap:wrap; gap:2px;' },
+        concepts.map(c => h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => c.name }))
+      )
+    }
+  },
+  {
+    title: '当前价', key: '当前价格', width: 110,
+    sorter: (a, b) => Number(a['当前价格']) - Number(b['当前价格']),
+    render(row) {
+      const children = [h(NText, { type: row.type }, { default: () => Number(row['当前价格']).toFixed(2) })]
+      if (row['盘前盘后'] > 0) {
+        children.push(h('div', { style: 'font-size:12px;' },
+          `${row['盘前盘后']} ${row['盘前盘后涨跌幅']}%`))
+      }
+      return h('div', { style: 'display:flex; flex-direction:column;' }, children)
+    }
+  },
+  {
+    title: '涨跌幅', key: 'changePercent', width: 90,
+    sorter: (a, b) => Number(a.changePercent) - Number(b.changePercent),
+    defaultSortOrder: 'descend',
+    render(row) {
+      const sign = row.changePercent >= 0 ? '+' : ''
+      return h(NText, { type: row.type }, { default: () => `${sign}${Number(row.changePercent).toFixed(3)}%` })
+    }
+  },
+  {
+    title: '最高/最低', key: '今日最高价', width: 160,
+    sorter: (a, b) => Number(a['今日最高价']) - Number(b['今日最高价']),
+    render(row) {
+      return h('div', { style: 'font-size:12px; line-height:1.4;' }, [
+        h('div', null, `高 ${row['今日最高价']} (${row.highRate}%)`),
+        h('div', null, `低 ${row['今日最低价']} (${row.lowRate}%)`)
+      ])
+    }
+  },
+  {
+    title: '昨收/今开', key: '昨日收盘价', width: 120,
+    sorter: (a, b) => Number(a['昨日收盘价']) - Number(b['昨日收盘价']),
+    render(row) {
+      return h('div', { style: 'font-size:12px; line-height:1.4;' }, [
+        h('div', null, `昨收 ${row['昨日收盘价']}`),
+        h('div', null, `今开 ${row['今日开盘价']}`)
+      ])
+    }
+  },
+  {
+    title: '时间', key: '日期', width: 140,
+    sorter: (a, b) => String(a['日期'] + ' ' + a['时间']).localeCompare(String(b['日期'] + ' ' + b['时间'])),
+    render(row) {
+      return h('div', { style: 'font-size:12px;' }, `${row['日期']} ${row['时间']}`)
+    }
+  },
+  {
+    title: '操作', key: 'actions', width: 540, fixed: 'right',
+    render(row) {
+      const btns = [
+        h(NButton, { size: 'tiny', type: 'primary', secondary: true, onClick: () => showLightweightKline(row['股票代码'], row['股票名称']) }, { default: () => '多周期' }),
+        h(NButton, { size: 'tiny', type: 'error', secondary: true, style: 'margin-left:4px;', onClick: () => showK(row['股票代码'], row['股票名称']) }, { default: () => '日K' }),
+        h(NButton, { size: 'tiny', type: 'error', secondary: true, style: 'margin-left:4px;', onClick: () => showFenshi(row['股票代码'], row['股票名称'], row.changePercent) }, { default: () => '分时' }),
+        h(NButton, { size: 'tiny', type: 'info', secondary: true, style: 'margin-left:4px;', onClick: () => showTransactionDetail(row['股票代码'], row['股票名称']) }, { default: () => '成交明细' })
+      ]
+      if (row['买一报价'] > 0) {
+        btns.push(h(NButton, { size: 'tiny', type: 'error', secondary: true, style: 'margin-left:4px;', onClick: () => showMoney(row['股票代码'], row['股票名称']) }, { default: () => '资金' }))
+      }
+      btns.push(h(NButton, { size: 'tiny', type: 'success', secondary: true, style: 'margin-left:4px;', onClick: () => search(row['股票代码'], row['股票名称']) }, { default: () => '详情' }))
+      if (row['买一报价'] > 0) {
+        btns.push(h(NButton, { size: 'tiny', type: 'success', secondary: true, style: 'margin-left:4px;', onClick: () => searchNotice(row['股票代码']) }, { default: () => '公告' }))
+        btns.push(h(NButton, { size: 'tiny', type: 'success', secondary: true, style: 'margin-left:4px;', onClick: () => searchStockReport(row['股票代码']) }, { default: () => '研报' }))
+      }
+      btns.push(h(NButton, { size: 'tiny', type: 'warning', secondary: true, style: 'margin-left:4px;', onClick: () => setStock(row['股票代码'], row['股票名称']) }, { default: () => '成本' }))
+      if (data.openAiEnable) {
+        btns.push(h(NButton, { size: 'tiny', type: 'warning', secondary: true, style: 'margin-left:4px;', onClick: () => aiCheckStock(row['股票名称'], row['股票代码']) }, { default: () => 'AI分析' }))
+      }
+      // 设置分组下拉：复用统一的 options/renderLabel/onSelect，支持新建分组 + 切换（加入/移出）
+      btns.push(h(NDropdown, {
+        trigger: 'click', options: setGroupOptions.value,
+        menuProps: () => ({ style: 'max-height:300px; overflow-y:auto;' }),
+        renderLabel: (option) => renderSetGroupLabel(option, row['股票代码']),
+        onSelect: (groupId) => handleSetGroupSelect(groupId, row['股票代码'], row['股票名称'])
+      }, {
+        default: () => h(NButton, { size: 'tiny', type: 'warning', tertiary: true, style: 'margin-left:4px;' }, { default: () => '设置分组' })
+      }))
+      // 设置概念下拉：与设置分组一致，支持新建概念 + 切换（加入/移出），概念不产生页签
+      btns.push(h(NDropdown, {
+        trigger: 'click', options: setConceptOptions.value,
+        menuProps: () => ({ style: 'max-height:300px; overflow-y:auto;' }),
+        renderLabel: (option) => renderSetConceptLabel(option, row['股票代码']),
+        onSelect: (conceptId) => handleSetConceptSelect(conceptId, row['股票代码'], row['股票名称'])
+      }, {
+        default: () => h(NButton, { size: 'tiny', type: 'info', tertiary: true, style: 'margin-left:4px;' }, { default: () => '设置概念' })
+      }))
+      btns.push(h(NButton, { size: 'tiny', type: 'error', tertiary: true, style: 'margin-left:4px;', onClick: () => removeMonitor(row['股票代码'], row['股票名称'], row.key) }, { default: () => '取消关注' }))
+      return h('div', { style: 'display:flex; flex-wrap:wrap; gap:4px; align-items:center;' }, btns)
+    }
+  }
+]
+
 const showPopover = ref(false)
 // 拖拽相关变量
 const dragSourceIndex = ref(null)
@@ -332,6 +863,13 @@ onBeforeMount(() => {
       }
     }
   }).catch(err => { console.error("GetGroupList error:", err) })
+  // 加载全量分组归属，用于「全部」标签页表格的分组列
+  refreshCodeToGroups()
+  // 加载概念列表 + 全量概念归属，用于「全部」标签页表格的概念列与下拉勾选
+  GetConceptList().then(result => {
+    conceptList.value = result
+  }).catch(err => { console.error("GetConceptList error:", err) })
+  refreshCodeToConcepts()
   GetStockList("").then(result => {
     stockList.value = result
     options.value = result.map(item => {
@@ -449,6 +987,11 @@ onBeforeMount(() => {
     });
   })
 
+  // AI 工具修改分组/概念后推送此事件，触发前端刷新缓存
+  EventsOn("stockDataChanged", () => {
+    refreshCodeToConcepts()
+    refreshCodeToGroups()
+  })
 
   EventsOn("updateVersion", async (msg) => {
     const githubTimeStr = msg.published_at;
@@ -730,6 +1273,60 @@ function fetchGroupList() {
   })
 }
 
+// 刷新「股票代码 -> 所属分组名/ID 数组」映射，供「全部」标签页表格分组列与分组筛选使用。
+// 一次拉取全量 group_stock_info（含 GroupInfo），前端按 stockCode 聚合。
+function refreshCodeToGroups() {
+  GetAllGroupStocks().then(list => {
+    const nameMap = new Map()
+    const idMap = new Map()
+    if (Array.isArray(list)) {
+      for (const gs of list) {
+        const code = gs.stockCode
+        if (!code) continue
+        const gname = gs.groupInfo && gs.groupInfo.name ? gs.groupInfo.name : ''
+        const gid = gs.groupInfo && gs.groupInfo.ID ? gs.groupInfo.ID : 0
+        if (gname && gid) {
+          if (!nameMap.has(code)) nameMap.set(code, [])
+          nameMap.get(code).push({ id: gid, name: gname })
+        }
+        if (gid) {
+          if (!idMap.has(code)) idMap.set(code, [])
+          idMap.get(code).push(gid)
+        }
+      }
+    }
+    codeToGroupNames.value = nameMap
+    codeToGroupIds.value = idMap
+  }).catch(err => { console.error("GetAllGroupStocks error:", err) })
+}
+
+// 刷新「股票代码 -> 所属概念名/ID 数组」映射，供「全部」标签页表格概念列与概念筛选使用。
+// 一次拉取全量 stock_concept_relation（含 ConceptInfo），前端按 stockCode 聚合。
+function refreshCodeToConcepts() {
+  GetAllStockConcepts().then(list => {
+    const nameMap = new Map()
+    const idMap = new Map()
+    if (Array.isArray(list)) {
+      for (const cs of list) {
+        const code = cs.stockCode
+        if (!code) continue
+        const cname = cs.conceptInfo && cs.conceptInfo.name ? cs.conceptInfo.name : ''
+        const cid = cs.conceptInfo && cs.conceptInfo.ID ? cs.conceptInfo.ID : 0
+        if (cname && cid) {
+          if (!nameMap.has(code)) nameMap.set(code, [])
+          nameMap.get(code).push({ id: cid, name: cname })
+        }
+        if (cid) {
+          if (!idMap.has(code)) idMap.set(code, [])
+          idMap.get(code).push(cid)
+        }
+      }
+    }
+    codeToConceptNames.value = nameMap
+    codeToConceptIds.value = idMap
+  }).catch(err => { console.error("GetAllStockConcepts error:", err) })
+}
+
 // 关注时的分组选择下拉选项（参考形态选股 allStockList.vue）
 const followGroupOptions = computed(() => {
   const opts = [{label: '默认（不分组）', key: 0}]
@@ -739,8 +1336,28 @@ const followGroupOptions = computed(() => {
   return opts
 })
 
+// 「设置分组」下拉选项：分组列表 + 分隔符 + 新建分组（与关注下拉一致，复用 new 流程）
+const setGroupOptions = computed(() => {
+  const opts = []
+  groupList.value.forEach(g => opts.push({label: g.name, key: g.ID}))
+  opts.push({type: 'divider', key: 'divider'})
+  opts.push({label: '新建分组', key: 'new'})
+  return opts
+})
+
+// 「设置概念」下拉选项：概念列表 + 分隔符 + 新建概念（概念不产生页签）
+const setConceptOptions = computed(() => {
+  const opts = []
+  conceptList.value.forEach(c => opts.push({label: c.name, key: c.ID}))
+  opts.push({type: 'divider', key: 'divider'})
+  opts.push({label: '新建概念', key: 'new'})
+  return opts
+})
+
 // 新建分组后待关注的股票（null 表示非关注流程打开的分组弹窗）
 const pendingFollow = ref(null)
+// 「设置分组」时新建分组后待加入的股票（null 表示非设置分组流程打开的分组弹窗）
+const pendingAddStockGroup = ref(null)
 
 function groupNameById(id) {
   const g = groupList.value.find(item => item.ID === id)
@@ -785,6 +1402,8 @@ function doFollowStock(groupId) {
       if (groupId > 0) {
         AddStockGroup(groupId, data.code).then(() => {
           GetGroupList().then(gList => { groupList.value = gList })
+          // 刷新「全部」标签页表格的分组列映射
+          refreshCodeToGroups()
           if (currentGroupId.value === groupId) {
             updateTab(currentGroupId.value)
           }
@@ -822,6 +1441,10 @@ function SendDanmu() {
   ws.value.send(data.name)
 }
 
+// 在线搜索防抖（用于场内 ETF 等本地缓存未覆盖的标的）
+let stockSearchTimer = null
+let stockSearchSeq = 0
+
 function getStockList(value) {
 
 
@@ -848,6 +1471,26 @@ function getStockList(value) {
     blinkBorder(findId)
   }
 
+  // 非空关键字时，防抖调用后端在线搜索（含场内 ETF：本地 FundBasic 缺失时会在线拉取），
+  // 合并本地 stockList 未覆盖的结果，使 513310 等场内基金可被搜到并关注
+  if (stockSearchTimer) clearTimeout(stockSearchTimer)
+  if (!value) return
+  const seq = ++stockSearchSeq
+  stockSearchTimer = setTimeout(() => {
+    GetStockList(value).then(res => {
+      if (seq !== stockSearchSeq || !res || !res.length) return
+      const existing = new Set(options.value.map(o => o.value))
+      const extra = []
+      for (const item of res) {
+        if (item.ts_code && !existing.has(item.ts_code)) {
+          extra.push({ label: (item.name || '') + " - " + item.ts_code, value: item.ts_code })
+          existing.add(item.ts_code)
+        }
+        if (extra.length >= 20) break
+      }
+      if (extra.length) options.value = options.value.concat(extra)
+    }).catch(() => {})
+  }, 300)
 
 }
 
@@ -1098,6 +1741,10 @@ function showFsChart(code, name) {
   GetStockMinutePriceLineData(code, name).then(result => {
     // console.log("GetStockMinutePriceLineData", result)
     const priceData = result.priceData
+    if (!priceData || priceData.length === 0) {
+      message.warning('暂无分时数据')
+      return
+    }
     let category = []
     let price = []
     let openprice = 0
@@ -1316,6 +1963,8 @@ function showFsChart(code, name) {
       ]
     };
     chart.setOption(option);
+  }).catch(err => {
+    message.error('分时数据加载失败：' + (err && err.message ? err.message : err))
   })
 }
 
@@ -1340,6 +1989,476 @@ function handleFeishi() {
   feishiInterval.value = setInterval(() => {
     showFsChart(data.code, data.name);
   }, 1000 * 10)
+}
+
+// 渲染 gotdx 分时图（价格 + 均价 + 昨收线 + 成交量）
+function renderTdxMinuteChart(bundle) {
+  if (!bundle || !bundle.items || bundle.items.length === 0 || !tdxTransactionChartRef.value) {
+    return
+  }
+  if (tdxTransactionChart.value) {
+    tdxTransactionChart.value.dispose()
+    tdxTransactionChart.value = null
+  }
+  const chart = echarts.init(tdxTransactionChartRef.value)
+  tdxTransactionChart.value = chart
+
+  const category = []
+  const price = []
+  const avg = []
+  const vol = []
+  let min = 0, max = 0
+  for (let i = 0; i < bundle.items.length; i++) {
+    const it = bundle.items[i]
+    category.push(it.time)
+    price.push(it.price)
+    avg.push(it.avg)
+    vol.push(it.vol)
+    if (i === 0) {
+      min = it.price
+      max = it.price
+    } else {
+      if (it.price < min) min = it.price
+      if (it.price > max) max = it.price
+    }
+  }
+  // 给上下留一点空间
+  const span = (max - min) || (max * 0.01 || 1)
+  const yMin = (min - span * 0.1).toFixed(2)
+  const yMax = (max + span * 0.1).toFixed(2)
+  // 昨收基准线
+  const preClose = bundle.preClose || 0
+
+  const option = {
+    title: {
+      subtext: '[' + (bundle.date || '') + '] 昨收:' + preClose + ' 今开:' + (bundle.open || 0) +
+        ' 最高:' + (bundle.high || 0) + ' 最低:' + (bundle.low || 0) + ' 收盘:' + (bundle.close || 0) +
+        ' 总量:' + (bundle.vol || 0) + ' 总额:' + (bundle.amount || 0).toFixed(2),
+      left: 'center',
+      top: '6',
+      subtextStyle: { color: data.darkTheme ? '#ccc' : '#456', fontSize: 12 }
+    },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross', label: { backgroundColor: '#505765' } }
+    },
+    legend: { data: ['价格', '均价', '成交量'], right: 30, top: 6 },
+    darkMode: data.darkTheme,
+    axisPointer: { link: [{ xAxisIndex: 'all' }], label: { backgroundColor: '#888' } },
+    grid: [
+      { left: '8%', right: '8%', top: '20%', height: '50%' },
+      { left: '8%', right: '8%', top: '76%', height: '16%' }
+    ],
+    xAxis: [
+      { type: 'category', data: category, axisLabel: { show: false } },
+      { gridIndex: 1, type: 'category', data: category }
+    ],
+    yAxis: [
+      {
+        scale: true,
+        min: yMin,
+        max: yMax,
+        minInterval: 0.01,
+        type: 'value',
+        name: '价格',
+        splitLine: { show: false }
+      },
+      { gridIndex: 1, type: 'value', name: '量', splitLine: { show: false } }
+    ],
+    series: [
+      {
+        name: '价格',
+        type: 'line',
+        data: price,
+        showSymbol: false,
+        smooth: false,
+        lineStyle: { width: 2 },
+        markLine: {
+          symbol: 'none',
+          data: [
+            { type: 'max', name: '最高' },
+            { type: 'min', name: '最低' },
+            {
+              yAxis: preClose,
+              name: '昨收',
+              lineStyle: { color: '#FFCB00', width: 0.8, type: 'dashed' },
+              label: { formatter: '昨收' }
+            }
+          ]
+        }
+      },
+      { name: '均价', type: 'line', data: avg, showSymbol: false, lineStyle: { width: 1, color: '#FF9900' } },
+      { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vol }
+    ]
+  }
+  chart.setOption(option)
+}
+
+// 渲染多日分时图：将各日数据点按时间顺序拼接为连续时间轴（与净流入折线图一致），
+// x 轴标签格式 "MM-DD HH:MM"，价格/均价为连续折线，成交量在下方子图展示
+function renderTdxMultiDayMinuteChart(bundles) {
+  if (!tdxTransactionChartRef.value) return
+  if (!bundles || bundles.length === 0) return
+  if (tdxTransactionChart.value) {
+    tdxTransactionChart.value.dispose()
+    tdxTransactionChart.value = null
+  }
+  const chart = echarts.init(tdxTransactionChartRef.value)
+  tdxTransactionChart.value = chart
+
+  // 拼接所有日的数据点，x 轴标签 "MM-DD HH:MM"
+  const category = []
+  const price = []
+  const avg = []
+  const vol = []
+  let min = 0, max = 0
+  let hasData = false
+  for (const b of bundles) {
+    const items = (b.bundle && b.bundle.items) || []
+    const parts = b.dateStr.split('-')
+    const md = parts.length === 3 ? `${parts[1]}-${parts[2]}` : b.dateStr
+    for (const it of items) {
+      category.push(`${md} ${it.time || ''}`)
+      price.push(it.price)
+      avg.push(it.avg)
+      vol.push(it.vol)
+      if (!hasData) { min = it.price; max = it.price; hasData = true }
+      else { if (it.price < min) min = it.price; if (it.price > max) max = it.price }
+    }
+  }
+  if (!hasData) return
+
+  const span = (max - min) || (max * 0.01 || 1)
+  const yMin = (min - span * 0.1).toFixed(2)
+  const yMax = (max + span * 0.1).toFixed(2)
+  // x 轴标签稀疏化
+  const labelInterval = category.length > 8 ? Math.floor(category.length / 8) : 0
+
+  const dateRangeText = `${bundles[0].dateStr} ~ ${bundles[bundles.length - 1].dateStr}（共 ${bundles.length} 日）`
+
+  const option = {
+    title: {
+      text: '多日分时走势',
+      subtext: dateRangeText,
+      left: 'center',
+      top: 4,
+      textStyle: { fontSize: 13, color: data.darkTheme ? '#ccc' : '#333' },
+      subtextStyle: { color: data.darkTheme ? '#ccc' : '#456', fontSize: 12 }
+    },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross', label: { backgroundColor: '#505765' } }
+    },
+    legend: { data: ['价格', '均价', '成交量'], right: 30, top: 6 },
+    darkMode: data.darkTheme,
+    axisPointer: { link: [{ xAxisIndex: 'all' }], label: { backgroundColor: '#888' } },
+    grid: [
+      { left: '8%', right: '8%', top: '20%', height: '50%' },
+      { left: '8%', right: '8%', top: '76%', height: '16%' }
+    ],
+    xAxis: [
+      { type: 'category', data: category, axisLabel: { show: false } },
+      { gridIndex: 1, type: 'category', data: category, axisLabel: { interval: labelInterval, fontSize: 10 } }
+    ],
+    yAxis: [
+      { scale: true, min: yMin, max: yMax, minInterval: 0.01, type: 'value', name: '价格', splitLine: { show: false } },
+      { gridIndex: 1, type: 'value', name: '量', splitLine: { show: false } }
+    ],
+    series: [
+      {
+        name: '价格',
+        type: 'line',
+        data: price,
+        showSymbol: false,
+        smooth: false,
+        lineStyle: { width: 2 }
+      },
+      { name: '均价', type: 'line', data: avg, showSymbol: false, lineStyle: { width: 1, color: '#FF9900' } },
+      { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vol }
+    ]
+  }
+  chart.setOption(option)
+}
+
+// 渲染各档位累计净流入金额变化折线图
+function renderTdxNetInflowChart() {
+  if (!tdxNetInflowChartRef.value) return
+  if (tdxNetInflowChart.value) {
+    tdxNetInflowChart.value.dispose()
+    tdxNetInflowChart.value = null
+  }
+  const chart = echarts.init(tdxNetInflowChartRef.value)
+  tdxNetInflowChart.value = chart
+  const { xData, series } = tdxNetInflowSeries.value
+  if (!xData || xData.length === 0) {
+    chart.setOption({ title: { text: '暂无数据', left: 'center', top: 'middle', textStyle: { color: '#999', fontSize: 13 } } })
+    return
+  }
+  const names = ['超大单', '大单', '中单', '小单']
+  const colors = ['#d03050', '#f0a020', '#2080f0', '#909399']
+  // x 轴标签稀疏化，避免拥挤
+  const labelInterval = xData.length > 8 ? Math.floor(xData.length / 8) : 0
+  const option = {
+    title: { text: '各档位累计净流入金额变化', left: 'center', top: 4, textStyle: { fontSize: 13, color: data.darkTheme ? '#ccc' : '#333' } },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        if (!params || params.length === 0) return ''
+        let html = params[0].axisValue + '<br/>'
+        for (const p of params) {
+          const wan = (p.value / 10000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+          html += `${p.marker}${p.seriesName}: ${wan} 万<br/>`
+        }
+        return html
+      }
+    },
+    legend: { data: names, top: 26, textStyle: { color: data.darkTheme ? '#ccc' : '#456' } },
+    darkMode: data.darkTheme,
+    grid: { left: '10%', right: '6%', top: 60, bottom: 30 },
+    xAxis: {
+      type: 'category',
+      data: xData,
+      axisLabel: { interval: labelInterval, fontSize: 10 }
+    },
+    yAxis: {
+      type: 'value',
+      name: '净流入(万)',
+      axisLabel: { formatter: (v) => (v / 10000).toFixed(0) },
+      splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }
+    },
+    series: names.map((name, i) => ({
+      name,
+      type: 'line',
+      data: series[i],
+      smooth: false,
+      showSymbol: false,
+      lineStyle: { width: 2, color: colors[i] },
+      itemStyle: { color: colors[i] },
+      emphasis: { focus: 'series' }
+    }))
+  }
+  chart.setOption(option)
+}
+// 拉取实时价格与涨跌幅
+function fetchRealTimePrice() {
+  if (!data.code) return
+  GetStockRealTimePrice(data.code).then(res => {
+    if (res && res.code === 0) {
+      tdxRealTimeInfo.value = {
+        price: res.price || 0,
+        preClose: res.preClose || 0,
+        changePercent: res.changePercent || 0
+      }
+    }
+  }).catch(() => {})
+}
+// 启动自动刷新（10 秒轮询；仅交易日 + 选中范围含今天时刷新成交明细，价格始终刷新）
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!tdxAutoRefresh.value) return
+  tdxAutoRefreshTimer = setInterval(() => {
+    // 始终刷新实时价格
+    fetchRealTimePrice()
+    // 仅当选中范围含今天且今天为交易日时，刷新成交明细
+    const range = tdxSelectedDateRange.value || []
+    if (range.length >= 2 && range[0] != null && range[1] != null) {
+      const todayStr = formatTdxDate(Date.now())
+      const startStr = formatTdxDate(range[0])
+      const endStr = formatTdxDate(range[1])
+      if (todayStr >= startStr && todayStr <= endStr && todayIsTradingDay.value) {
+        // Auto refresh must bypass today's 5-minute backend cache. Historical
+        // dates in a multi-day range can still use their completed caches.
+        loadTdxTransactionByDate(true, true)
+      }
+    }
+  }, 10000)
+}
+function stopAutoRefresh() {
+  if (tdxAutoRefreshTimer) {
+    clearInterval(tdxAutoRefreshTimer)
+    tdxAutoRefreshTimer = null
+  }
+}
+// 切换自动刷新开关
+function toggleAutoRefresh() {
+  tdxAutoRefresh.value = !tdxAutoRefresh.value
+  if (tdxAutoRefresh.value) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+}
+function showTransactionDetail(code, name) {
+  data.code = code
+  data.name = name
+  tdxMinuteBundle.value = null
+  tdxMinuteBundleList.value = []
+  tdxTransactionList.value = []
+  tdxAmountFilter.value = 0
+  tdxTransactionPagination.value.itemCount = 0
+  tdxRealTimeInfo.value = { price: 0, preClose: 0, changePercent: 0 }
+  modalShow7.value = true
+  // 拉取实时价格与涨跌幅
+  fetchRealTimePrice()
+  // 先刷新今日交易日状态（后端通过 timor.tech 节假日 API 准确判断）
+  refreshTodayTradingDayStatus().then(() => {
+    if (todayIsTradingDay.value) {
+      // 今天是交易日：默认选今天（走当日实时接口，盘中可看实时分时/成交）
+      const todayTs = startOfTodayTs()
+      tdxSelectedDateRange.value = [todayTs, todayTs]
+      onTdxDateRangeChange([todayTs, todayTs])
+    } else {
+      // 今天非交易日：选最近交易日（GetLatestTradingDay 在非交易日返回上一交易日）
+      return GetLatestTradingDay().then(latestDay => {
+        const ts = startOfDayTs(new Date(latestDay.replace(/-/g, '/')).getTime())
+        tdxSelectedDateRange.value = [ts, ts]
+        onTdxDateRangeChange([ts, ts])
+      })
+    }
+  }).catch(() => {
+    // fallback：使用今天
+    const todayTs = startOfTodayTs()
+    tdxSelectedDateRange.value = [todayTs, todayTs]
+    onTdxDateRangeChange([todayTs, todayTs])
+  }).finally(() => {
+    // 启动自动刷新（10 秒轮询实时价格 + 成交明细）
+    startAutoRefresh()
+  })
+}
+
+// 按当前选中的日期范围加载分笔成交明细。
+// 单日：今天走 GetAllTdxTransactionData，历史日期走 GetHistoryTdxTransactionData。
+// 多日：枚举范围内每一天，按日调用对应接口，拼接所有成交明细（按日期升序），每条标记 dateStr。
+// skipCache=true 强制刷新所有日期的缓存。
+function loadTdxTransactionByDate(skipCache, refreshTodayOnly = false) {
+  const code = data.code
+  if (!code) return
+  if (tdxTransactionLoading.value) return
+  const range = tdxSelectedDateRange.value || []
+  if (!range || range.length < 2 || range[0] == null || range[1] == null) return
+  const days = enumerateDateRange(range[0], range[1])
+  if (days.length === 0) return
+
+  tdxTransactionLoading.value = true
+  // 每个日期并发拉取，最后按日期顺序合并
+  const promises = days.map(day => {
+    const forceRefresh = skipCache && (!refreshTodayOnly || day.isToday)
+    const p = day.isToday
+      ? (forceRefresh ? RefreshAllTdxTransactionData(code) : GetAllTdxTransactionData(code))
+      : (forceRefresh ? RefreshHistoryTdxTransactionData(code, day.dateStr) : GetHistoryTdxTransactionData(code, day.dateStr))
+    return p.then(list => ({ day, list: list || [] }))
+  })
+  Promise.all(promises).then(results => {
+    // 按日期升序拼接（days 本身已升序）
+    let keyIdx = 0
+    const combined = []
+    for (const { day, list } of results) {
+      for (const item of list) {
+        combined.push({ ...item, key: keyIdx++, dateStr: day.dateStr })
+      }
+    }
+    // 安全兜底：按 (dateStr, time) 升序排序，确保时间轴从左到右递增
+    // 防止后端缓存旧数据或协议返回顺序不一致导致图表倒序
+    combined.sort((a, b) => {
+      const da = a.dateStr || ''
+      const db = b.dateStr || ''
+      if (da !== db) return da < db ? -1 : 1
+      const ta = a.time || ''
+      const tb = b.time || ''
+      return ta < tb ? -1 : (ta > tb ? 1 : 0)
+    })
+    tdxTransactionList.value = combined
+    tdxTransactionPagination.value.page = 1
+    tdxTransactionPagination.value.itemCount = combined.length
+    nextTick(() => renderTdxNetInflowChart())
+  }).catch(err => {
+    message.error('分笔成交明细加载失败：' + (err && err.message ? err.message : err))
+  }).finally(() => {
+    tdxTransactionLoading.value = false
+  })
+}
+
+// 日期范围切换：清空数据并重新加载分时图与分笔成交明细
+// 单日范围：渲染该日分时图（今天走 GetTdxMinuteTimeData，历史走 GetHistoryTdxMinuteTimeData）
+// 多日范围：并行拉取每日分时数据，叠加渲染为多日对比图（每日一条价格折线）
+function onTdxDateRangeChange(range) {
+  if (!range || range.length < 2 || range[0] == null || range[1] == null) return
+  // daterange 默认返回带时分秒的时间戳，对齐到当天 0 点保证 isToday/format 判断稳定
+  const aligned = [startOfDayTs(range[0]), startOfDayTs(range[1])]
+  tdxSelectedDateRange.value = aligned
+  tdxTransactionList.value = []
+  tdxAmountFilter.value = 0
+  tdxTransactionPagination.value.itemCount = 0
+
+  if (tdxIsMultiDay.value) {
+    // 多日：并行拉取每日分时数据，叠加渲染为对比图
+    const days = enumerateDateRange(aligned[0], aligned[1])
+    tdxMinuteBundle.value = null
+    tdxMinuteBundleList.value = []
+    const minutePromises = days.map(day => {
+      const p = day.isToday
+        ? GetTdxMinuteTimeData(data.code)
+        : GetHistoryTdxMinuteTimeData(data.code, day.dateStr)
+      return p.then(bundle => ({ dateStr: day.dateStr, bundle })).catch(() => ({ dateStr: day.dateStr, bundle: null }))
+    })
+    Promise.all(minutePromises).then(results => {
+      const valid = results.filter(r => r.bundle && r.bundle.items && r.bundle.items.length > 0)
+      tdxMinuteBundleList.value = valid
+      if (valid.length > 0) {
+        nextTick(() => renderTdxMultiDayMinuteChart(valid))
+      } else {
+        if (tdxTransactionChart.value) {
+          tdxTransactionChart.value.dispose()
+          tdxTransactionChart.value = null
+        }
+      }
+    }).catch(err => {
+      message.error('多日分时数据加载失败：' + (err && err.message ? err.message : err))
+    })
+  } else {
+    // 单日：渲染分时图（今天且为交易日走当日接口，否则走历史分时接口）
+    const ts = aligned[0]
+    const dateStr = formatTdxDate(ts)
+    const minutePromise = shouldUseCurrentDayApi(ts)
+      ? GetTdxMinuteTimeData(data.code)
+      : GetHistoryTdxMinuteTimeData(data.code, dateStr)
+    minutePromise.then(bundle => {
+      tdxMinuteBundle.value = bundle
+      nextTick(() => renderTdxMinuteChart(bundle))
+    }).catch(err => {
+      message.error('分时数据加载失败：' + (err && err.message ? err.message : err))
+      if (tdxTransactionChart.value) {
+        tdxTransactionChart.value.dispose()
+        tdxTransactionChart.value = null
+      }
+      tdxMinuteBundle.value = null
+    })
+  }
+  // 分笔成交明细（按当前选中日期范围加载）
+  loadTdxTransactionByDate(false)
+}
+
+function handleTdxTransactionModalClose() {
+  stopAutoRefresh()
+  if (tdxTransactionChart.value) {
+    tdxTransactionChart.value.dispose()
+    tdxTransactionChart.value = null
+  }
+  if (tdxNetInflowChart.value) {
+    tdxNetInflowChart.value.dispose()
+    tdxNetInflowChart.value = null
+  }
+  tdxMinuteBundle.value = null
+  tdxMinuteBundleList.value = []
+  tdxTransactionList.value = []
+  tdxAmountFilter.value = 0
+  tdxRealTimeInfo.value = { price: 0, preClose: 0, changePercent: 0 }
+}
+
+// 手动刷新分时明细（按当前选中日期强制刷新）
+function refreshTdxTransaction() {
+  loadTdxTransactionByDate(true)
+  message.success('已刷新分笔成交明细')
 }
 
 function calculateMA(dayCount, values) {
@@ -2306,8 +3425,50 @@ function saveTabPane() {
           doFollowStock(created.ID)
         }
       }
+      // 若来自「设置分组」流程的新建分组，创建成功后把股票加入新分组
+      if (pendingAddStockGroup.value) {
+        const created = gList.find(g => g.name === addTabModel.value.name)
+        const ps = pendingAddStockGroup.value
+        pendingAddStockGroup.value = null
+        if (created) {
+          AddStockGroupInfo(created.ID, ps.code, ps.name)
+        }
+      }
     })
   })
+}
+
+// 概念标签：新建概念弹窗状态与保存逻辑（名称忽略大小写去重，复用已存在概念）
+const addConceptModel = ref({
+  name: '',
+  sort: 1,
+})
+const addConceptPane = ref(false)
+
+function saveConceptPane() {
+  const rawName = (addConceptModel.value.name || '').trim()
+  if (!rawName) {
+    message.warning('请输入概念名称')
+    return
+  }
+  // AddConcept 后端做大小写无关去重（幂等），成功后刷新列表
+  AddConcept({ name: rawName, sort: addConceptModel.value.sort }).then(result => {
+    message.info(result)
+    addConceptPane.value = false
+    GetConceptList().then(cList => {
+      conceptList.value = cList
+      // 若来自「设置概念」流程，把股票加入新建（或已存在同名）概念
+      if (pendingAddStockConcept.value) {
+        const ps = pendingAddStockConcept.value
+        pendingAddStockConcept.value = null
+        // 大小写无关查找，复用已存在概念（去重的关键）
+        const created = cList.find(c => (c.name || '').toLowerCase() === rawName.toLowerCase())
+        if (created) {
+          AddStockConceptInfo(created.ID, ps.code, ps.name)
+        }
+      }
+    })
+  }).catch(err => message.error('添加概念失败: ' + (err?.message || err)))
 }
 
 // 修改分组名称
@@ -2351,6 +3512,8 @@ function AddStockGroupInfo(groupId, code, name) {
     GetGroupList().then(gList => {
       groupList.value = gList
     })
+    // 刷新「全部」标签页表格的分组列映射
+    refreshCodeToGroups()
     // 当前正处于目标分组时，刷新该分组，让新成员立即可见
     if (currentGroupId.value === groupId) {
       updateTab(currentGroupId.value)
@@ -2358,6 +3521,82 @@ function AddStockGroupInfo(groupId, code, name) {
   }).catch(err => {
     message.error('设置分组失败: ' + (err?.message || err))
   })
+}
+
+// 「设置分组」下拉的统一选中处理：new → 打开新建分组弹窗（创建后把股票加入）；普通项 → 切换（未所属加入 / 已所属移出）
+function handleSetGroupSelect(groupId, stockCode, stockName) {
+  if (groupId === 'new') {
+    pendingAddStockGroup.value = {code: stockCode, name: stockName}
+    addTabModel.value = {name: '', sort: 1}
+    addTabPane.value = true
+    return
+  }
+  const belongSet = new Set(codeToGroupIds.value.get(stockCode) || [])
+  if (belongSet.has(groupId)) {
+    // 已所属该分组 → 移出（不切换页签，仅刷新映射）
+    RemoveStockGroup(stockCode, stockName, groupId).then(result => {
+      message.info(result)
+      refreshCodeToGroups()
+    })
+  } else {
+    AddStockGroupInfo(groupId, stockCode, stockName)
+  }
+}
+
+// 「设置分组」下拉的统一 option 渲染：new 项蓝色加 ➕；普通项右侧显示绿色 ✓（若已所属）
+function renderSetGroupLabel(option, stockCode) {
+  if (option.key === 'new') {
+    return h('div', {style: 'color:#2080f0; font-weight:bold;'}, '➕ 新建分组')
+  }
+  const belongSet = new Set(codeToGroupIds.value.get(stockCode) || [])
+  return h('div', {style: 'display:flex; justify-content:space-between; align-items:center; min-width:120px;'}, [
+    h('span', null, option.label),
+    belongSet.has(option.key) ? h('span', {style: 'color:#18a058; margin-left:8px; font-weight:bold;'}, '✓') : null
+  ])
+}
+
+// 把股票加入概念（概念不产生页签，仅刷新映射）
+function AddStockConceptInfo(conceptId, code, name) {
+  AddStockConcept(conceptId, code).then(result => {
+    message.info(result)
+    GetConceptList().then(cList => { conceptList.value = cList })
+    // 刷新「全部」标签页表格的概念列映射
+    refreshCodeToConcepts()
+  }).catch(err => {
+    message.error('设置概念失败: ' + (err?.message || err))
+  })
+}
+
+// 「设置概念」下拉的统一选中处理：new → 打开新建概念弹窗（创建后把股票加入）；普通项 → 切换（未所属加入 / 已所属移出）
+function handleSetConceptSelect(conceptId, stockCode, stockName) {
+  if (conceptId === 'new') {
+    pendingAddStockConcept.value = {code: stockCode, name: stockName}
+    addConceptModel.value = {name: '', sort: 1}
+    addConceptPane.value = true
+    return
+  }
+  const belongSet = new Set(codeToConceptIds.value.get(stockCode) || [])
+  if (belongSet.has(conceptId)) {
+    // 已所属该概念 → 移出
+    RemoveStockConcept(stockCode, stockName, conceptId).then(result => {
+      message.info(result)
+      refreshCodeToConcepts()
+    })
+  } else {
+    AddStockConceptInfo(conceptId, stockCode, stockName)
+  }
+}
+
+// 「设置概念」下拉的统一 option 渲染：new 项蓝色加 ➕；普通项右侧显示绿色 ✓（若已所属）
+function renderSetConceptLabel(option, stockCode) {
+  if (option.key === 'new') {
+    return h('div', {style: 'color:#2080f0; font-weight:bold;'}, '➕ 新建概念')
+  }
+  const belongSet = new Set(codeToConceptIds.value.get(stockCode) || [])
+  return h('div', {style: 'display:flex; justify-content:space-between; align-items:center; min-width:120px;'}, [
+    h('span', null, option.label),
+    belongSet.has(option.key) ? h('span', {style: 'color:#18a058; margin-left:8px; font-weight:bold;'}, '✓') : null
+  ])
 }
 
 function updateTab(name) {
@@ -2392,11 +3631,15 @@ function delTab(groupId) {
     onPositiveClick: () => {
       RemoveGroup(Number(groupId)).then(result => {
         message.info(result)
+        // 若「全部」标签页正在按被删分组筛选，重置为「全部分组」
+        if (tableGroupFilter.value === Number(groupId)) tableGroupFilter.value = 0
         GetGroupList().then(result => {
           groupList.value = result
           // 通知 App.vue 菜单栏立即刷新分组子项
           EventsEmit("groupListChanged")
         })
+        // 分组删除后成员关系变化，刷新「全部」标签页表格的分组列映射
+        refreshCodeToGroups()
       })
     }
   })
@@ -2405,6 +3648,8 @@ function delTab(groupId) {
 function delStockGroup(code, name, groupId) {
   RemoveStockGroup(code, name, groupId).then(result => {
     updateTab(groupId)
+    // 刷新「全部」标签页表格的分组列映射
+    refreshCodeToGroups()
     message.info(result)
   })
 }
@@ -2436,6 +3681,12 @@ watch(modalShow6, (newVal) => {
     klineAutoCloseTimer.value = null
   }
 })
+
+// 大单过滤切换后，同步分页 itemCount + 回到第 1 页
+watch([tdxAmountFilter, filteredTdxTransactionList], () => {
+  tdxTransactionPagination.value.itemCount = filteredTdxTransactionList.value.length
+  tdxTransactionPagination.value.page = 1
+})
 </script>
 
 <template>
@@ -2448,7 +3699,9 @@ watch(modalShow6, (newVal) => {
       </n-gradient-text>
     </template>
   </vue-danmaku>
-  <n-tabs type="card" style="--wails-draggable:no-drag" animated addable :data-currentGroupId="currentGroupId"
+  <n-tabs type="card" style="--wails-draggable:no-drag"
+          :style="{ '--stock-tab-nav-bg': tabNavBgColor }"
+          animated addable :data-currentGroupId="currentGroupId"
           :value="String(currentGroupId)" @add="addTab" @update:value="updateTab" placement="top" @close="(key)=>{delTab(key)}">
 
     <template #suffix>
@@ -2458,151 +3711,29 @@ watch(modalShow6, (newVal) => {
     </template>
 
     <n-tab-pane closable name="0" :tab="'全部'">
-      <n-grid :x-gap="8" :cols="3" :y-gap="8">
-        <n-gi :id="result['股票代码']+'_gi'" v-for="result in sortedResults" :key="result.key" style="margin-left: 2px;">
-          <n-card :data-sort="result.sort" :id="result['股票代码']" :data-code="result['股票代码']" :bordered="true"
-                  :title="result['股票名称']" :closable="false"
-                  @close="removeMonitor(result['股票代码'],result['股票名称'],result.key)">
-            <n-grid :cols="1" :y-gap="6">
-              <n-gi>
-                <n-text :type="result.type">
-                  <n-number-animation :duration="1000" :precision="2" :from="result['上次当前价格']"
-                                      :to="Number(result['当前价格'])"/>
-                  <n-tag size="small" :type="result.type" :bordered="false" v-if="result['盘前盘后']>0">
-                    ({{ result['盘前盘后'] }} {{ result['盘前盘后涨跌幅'] }}%)
-                  </n-tag>
-                </n-text>
-                <n-text style="padding-left: 10px;" :type="result.type">
-                  <n-number-animation :duration="1000" :precision="3" :from="result.lastChangePercent" :to="result.changePercent"/>
-                  %
-                </n-text>&nbsp;
-                <n-text size="small" v-if="result.costVolume>0" :type="result.type">
-                  <n-number-animation :duration="1000" :precision="2" :from="result.lastProfitAmountToday" :to="result.profitAmountToday"/>
-                </n-text>
-              </n-gi>
-            </n-grid>
-            <n-grid :cols="2" :y-gap="4" :x-gap="4">
-              <n-gi>
-                <n-text :type="'info'">{{ "最高 " + result["今日最高价"] + " " + result.highRate }}%</n-text>
-              </n-gi>
-              <n-gi>
-                <n-text :type="'info'">{{ "最低 " + result["今日最低价"] + " " + result.lowRate }}%</n-text>
-              </n-gi>
-              <n-gi>
-                <n-text :type="'info'">{{ "昨收 " + result["昨日收盘价"] }}</n-text>
-              </n-gi>
-              <n-gi>
-                <n-text :type="'info'">{{ "今开 " + result["今日开盘价"] }}</n-text>
-              </n-gi>
-            </n-grid>
-            <n-collapse accordion v-if="result['买一报价']>0">
-              <n-collapse-item title="盘口" name="1" v-if="result['买一报价']>0">
-                <template #header-extra>
-                  <n-flex justify="space-between">
-                    <n-text :type="'info'">{{ "买一 " + result["买一报价"] + '(' + result["买一申报"] + ")" }}</n-text>
-                    <n-text :type="'info'">{{ "卖一 " + result["卖一报价"] + '(' + result["卖一申报"] + ")" }}</n-text>
-                  </n-flex>
-                </template>
-                <n-grid :cols="2" :y-gap="4" :x-gap="4">
-                  <n-gi v-if="result['买一报价']>0">
-                    <n-text :type="'info'">{{ "买一 " + result["买一报价"] + '(' + result["买一申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖一报价']>0">
-                    <n-text :type="'info'">{{ "卖一 " + result["卖一报价"] + '(' + result["卖一申报"] + ")" }}</n-text>
-                  </n-gi>
-
-                  <n-gi v-if="result['买二报价']>0">
-                    <n-text :type="'info'">{{ "买二 " + result["买二报价"] + '(' + result["买二申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖二报价']>0">
-                    <n-text :type="'info'">{{ "卖二 " + result["卖二报价"] + '(' + result["卖二申报"] + ")" }}</n-text>
-                  </n-gi>
-
-                  <n-gi v-if="result['买三报价']>0">
-                    <n-text :type="'info'">{{ "买三 " + result["买三报价"] + '(' + result["买三申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖三报价']>0">
-                    <n-text :type="'info'">{{ "买三 " + result["卖三报价"] + '(' + result["卖三申报"] + ")" }}</n-text>
-                  </n-gi>
-
-                  <n-gi v-if="result['买四报价']>0">
-                    <n-text :type="'info'">{{ "买四 " + result["买四报价"] + '(' + result["买四申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖四报价']>0">
-                    <n-text :type="'info'">{{ "卖四 " + result["卖四报价"] + '(' + result["卖四申报"] + ")" }}</n-text>
-                  </n-gi>
-
-                  <n-gi v-if="result['买五报价']>0">
-                    <n-text :type="'info'">{{ "买五 " + result["买五报价"] + '(' + result["买五申报"] + ")" }}</n-text>
-                  </n-gi>
-                  <n-gi v-if="result['卖五报价']>0">
-                    <n-text :type="'info'">{{ "卖五 " + result["卖五报价"] + '(' + result["卖五申报"] + ")" }}</n-text>
-                  </n-gi>
-                </n-grid>
-              </n-collapse-item>
-            </n-collapse>
-            <template #header-extra>
-
-              <n-tag size="small" :bordered="false">{{ result['股票代码'] }}</n-tag>&nbsp;
-              <n-button size="tiny" secondary type="primary"
-                        @click="removeMonitor(result['股票代码'],result['股票名称'],result.key)">
-                取消关注
-              </n-button>&nbsp;
-
-              <n-button size="tiny" v-if="data.openAiEnable" secondary type="warning"
-                        @click="aiCheckStock(result['股票名称'],result['股票代码'])">
-                AI分析
-              </n-button>
-            </template>
-            <template #footer>
-              <n-flex vertical :size="8">
-                <n-flex justify="center">
-                  <n-text :type="'info'">{{ result["日期"] + " " + result["时间"] }}</n-text>
-                  <n-tag size="small" v-if="result.volume>0" :type="result.profitType">{{ result.volume + "股" }}</n-tag>
-                  <n-tag size="small" v-if="result.costPrice>0" :type="result.profitType">
-                    {{
-                      "成本:" + result.costPrice + "*" + result.costVolume + " " + result.profit + "%" + " ( " + result.profitAmount + " ¥ )"
-                    }}
-                  </n-tag>
-                </n-flex>
-                <n-flex justify="center">
-                  <n-button size="tiny" type="primary" secondary
-                            @click="showLightweightKline(result['股票代码'],result['股票名称'])">
-                    多周期K线
-                  </n-button>
-                </n-flex>
-              </n-flex>
-            </template>
-            <template #action>
-              <n-flex justify="left">
-                <n-button size="tiny" type="warning" @click="setStock(result['股票代码'],result['股票名称'])"> 成本
-                </n-button>
-                <n-button size="tiny" type="error"
-                          @click="showFenshi(result['股票代码'],result['股票名称'],result.changePercent)"> 分时
-                </n-button>
-                <n-button size="tiny" type="error" @click="showK(result['股票代码'],result['股票名称'])"> 日K</n-button>
-                <n-button size="tiny" type="error" v-if="result['买一报价']>0"
-                          @click="showMoney(result['股票代码'],result['股票名称'])"> 资金
-                </n-button>
-                <n-button size="tiny" type="success" @click="search(result['股票代码'],result['股票名称'])"> 详情
-                </n-button>
-                <n-button v-if="result['买一报价']>0" size="tiny" type="success"
-                          @click="searchNotice(result['股票代码'])"> 公告
-                </n-button>
-                <n-button v-if="result['买一报价']>0" size="tiny" type="success"
-                          @click="searchStockReport(result['股票代码'])"> 研报
-                </n-button>
-                <n-flex justify="right">
-                  <n-dropdown trigger="click" :options="groupList" key-field="ID" label-field="name"
-                              @select="(groupId) => AddStockGroupInfo(groupId,result['股票代码'],result['股票名称'])">
-                    <n-button type="warning" size="tiny">设置分组</n-button>
-                  </n-dropdown>
-                </n-flex>
-              </n-flex>
-            </template>
-          </n-card>
-        </n-gi>
-      </n-grid>
+      <div style="margin: 8px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+          <n-input v-model:value="tableSearchKeyword" clearable placeholder="搜索股票名称/代码"
+                   style="width:280px;" />
+          <n-select v-model:value="tableGroupFilter" :options="groupFilterOptions"
+                    placeholder="全部分组" style="width:180px;" filterable
+                    :consistent-menu-width="false" />
+          <n-select v-model:value="tableConceptFilter" :options="conceptFilterOptions"
+                    placeholder="全部概念" style="width:180px;" filterable
+                    :consistent-menu-width="false" />
+          <n-text depth="3" style="font-size:12px;">共 {{ allTableData.length }} 只</n-text>
+        </div>
+        <n-data-table
+          :columns="allTableColumns"
+          :data="allTableData"
+          :pagination="allTablePagination"
+          :row-key="(row) => row.key"
+          size="small"
+          striped
+          flex-height
+          style="height: calc(100vh - 190px);"
+        />
+      </div>
     </n-tab-pane>
     <n-tab-pane closable v-for="group in groupList" :group-id="group.ID" :name="String(group.ID)" :tab="group.name">
       <n-grid :x-gap="8" :cols="3" :y-gap="8">
@@ -2734,6 +3865,9 @@ watch(modalShow6, (newVal) => {
                 <n-button size="tiny" type="error"
                           @click="showFenshi(result['股票代码'],result['股票名称'],result.changePercent)"> 分时
                 </n-button>
+                <n-button size="tiny" type="info"
+                          @click="showTransactionDetail(result['股票代码'],result['股票名称'])"> 成交明细
+                </n-button>
                 <n-button size="tiny" type="error" @click="showK(result['股票代码'],result['股票名称'])"> 日K</n-button>
                 <n-button size="tiny" type="error" v-if="result['买一报价']>0"
                           @click="showMoney(result['股票代码'],result['股票名称'])"> 资金
@@ -2747,9 +3881,17 @@ watch(modalShow6, (newVal) => {
                           @click="searchStockReport(result['股票代码'])"> 研报
                 </n-button>
                 <n-flex justify="right">
-                  <n-dropdown trigger="click" :options="groupList" key-field="ID" label-field="name"
-                              @select="(groupId) => AddStockGroupInfo(groupId,result['股票代码'],result['股票名称'])">
+                  <n-dropdown trigger="click" :options="setGroupOptions"
+                              :menu-props="() => ({ style: 'max-height:300px; overflow-y:auto;' })"
+                              :render-label="(option) => renderSetGroupLabel(option, result['股票代码'])"
+                              @select="(groupId) => handleSetGroupSelect(groupId, result['股票代码'], result['股票名称'])">
                     <n-button type="warning" size="tiny">设置分组</n-button>
+                  </n-dropdown>
+                  <n-dropdown trigger="click" :options="setConceptOptions"
+                              :menu-props="() => ({ style: 'max-height:300px; overflow-y:auto;' })"
+                              :render-label="(option) => renderSetConceptLabel(option, result['股票代码'])"
+                              @select="(conceptId) => handleSetConceptSelect(conceptId, result['股票代码'], result['股票名称'])">
+                    <n-button type="info" size="tiny">设置概念</n-button>
                   </n-dropdown>
                 </n-flex>
               </n-flex>
@@ -2760,7 +3902,7 @@ watch(modalShow6, (newVal) => {
     </n-tab-pane>
   </n-tabs>
 
-  <div style="position: fixed;bottom: 18px;right:5px;z-index: 10;width: 400px">
+  <div style="position: fixed;top: 58px;right:5px;z-index: 10;width: 400px">
     <!--    <n-card :bordered="false">-->
     <n-input-group>
       <!--        <n-button  type="error" @click="addBTN=!addBTN" > <n-icon :component="Search"/>&nbsp;<n-text  v-if="addBTN">隐藏</n-text></n-button>-->
@@ -2775,7 +3917,7 @@ watch(modalShow6, (newVal) => {
 
       <n-popover trigger="manual" :show="showPopover">
         <template #trigger>
-          <n-dropdown trigger="click" :options="followGroupOptions" @select="handleFollowSelect" placement="top">
+          <n-dropdown trigger="click" :options="followGroupOptions" :menu-props="() => ({ style: 'max-height:300px; overflow-y:auto;' })" @select="handleFollowSelect" placement="top">
             <n-button type="primary" v-if="addBTN">
               <n-icon :component="Add"/> &nbsp;关注
             </n-button>
@@ -2901,6 +4043,34 @@ watch(modalShow6, (newVal) => {
           保存
         </n-button>
         <n-button type="warning" @click="addTabPane=false">
+          取消
+        </n-button>
+      </n-flex>
+    </template>
+  </n-modal>
+  <n-modal v-model:show="addConceptPane" title="添加概念" style="width: 400px;text-align: left" :preset="'card'">
+    <n-form
+        :model="addConceptModel"
+        size="medium"
+        label-placement="left"
+    >
+      <n-grid :cols="2">
+        <n-form-item-gi label="概念名称:" path="name" :span="5">
+          <n-input v-model:value="addConceptModel.name" style="width: 100%" placeholder="请输入概念名称"
+                   @keyup.enter="saveConceptPane"/>
+        </n-form-item-gi>
+        <n-form-item-gi label="概念排序:" path="sort" :span="5">
+          <n-input-number v-model:value="addConceptModel.sort" style="width: 100%" min="0"
+                          placeholder="请输入概念排序值"></n-input-number>
+        </n-form-item-gi>
+      </n-grid>
+    </n-form>
+    <template #footer>
+      <n-flex justify="end">
+        <n-button type="primary" @click="saveConceptPane">
+          保存
+        </n-button>
+        <n-button type="warning" @click="addConceptPane=false">
           取消
         </n-button>
       </n-flex>
@@ -3045,6 +4215,116 @@ watch(modalShow6, (newVal) => {
       @update:costPrice="handleCostPriceUpdate"
     />
   </n-modal>
+
+  <!-- gotdx 分时图 + 分笔成交明细 -->
+  <n-modal
+    v-model:show="modalShow7"
+    preset="card"
+    style="width: 1200px; max-width: calc(100vw - 32px);"
+    :content-style="{ padding: '8px' }"
+    @after-leave="handleTdxTransactionModalClose"
+  >
+    <template #header>
+      <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
+        <span>{{ (data.name || '') + '（' + (data.code || '') + '）' }}</span>
+        <template v-if="tdxRealTimeInfo.price > 0">
+          <span style="font-size:14px; font-weight:bold;" :style="{ color: tdxRealTimeInfo.changePercent >= 0 ? '#d03050' : '#18a058' }">
+            {{ tdxRealTimeInfo.price.toFixed(2) }}
+          </span>
+          <span style="font-size:13px;" :style="{ color: tdxRealTimeInfo.changePercent >= 0 ? '#d03050' : '#18a058' }">
+            {{ tdxRealTimeInfo.changePercent >= 0 ? '+' : '' }}{{ tdxRealTimeInfo.changePercent.toFixed(2) }}%
+          </span>
+        </template>
+      </div>
+    </template>
+    <template #header-extra>
+      <n-flex align="center" :size="8" :wrap="true">
+        <n-date-picker
+          v-model:value="tdxSelectedDateRange"
+          type="daterange"
+          size="small"
+          style="width:240px;"
+          :is-date-disabled="tdxDateDisabled"
+          :actions="['confirm']"
+          @update:value="onTdxDateRangeChange"
+        />
+        <n-button-group size="small">
+          <n-button
+            v-for="n in [2,3, 5, 10, 20, 30]"
+            :key="n"
+            :type="tdxActiveQuickDays === n ? 'primary' : 'default'"
+            :tertiary="tdxActiveQuickDays !== n"
+            size="small"
+            style="min-width:38px;"
+            @click="selectRecentDays(n)"
+          >近{{ n }}日</n-button>
+        </n-button-group>
+        <n-select
+          v-model:value="tdxAmountFilter"
+          :options="tdxAmountFilterOptions"
+          size="small"
+          style="width:180px;"
+          :consistent-menu-width="false"
+        />
+        <n-button size="small" :type="tdxAutoRefresh ? 'primary' : 'default'" tertiary @click="toggleAutoRefresh">
+          {{ tdxAutoRefresh ? '自动刷新' : '已暂停' }}
+        </n-button>
+        <n-button size="small" type="primary" tertiary @click="refreshTdxTransaction">刷新</n-button>
+      </n-flex>
+    </template>
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <div ref="tdxTransactionChartRef" style="width: 100%; height: 200px;"></div>
+
+      <!-- 各档位买卖方向占比 + 净流入金额统计 -->
+      <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:8px;">
+        <div v-for="stat in tdxAmountStats" :key="stat.level"
+             :style="`border:1px solid ${amountTagType(stat.level) === 'default' ? '#dcdfe6' : (
+                       amountTagType(stat.level) === 'error' ? '#d03050' :
+                       amountTagType(stat.level) === 'warning' ? '#f0a020' :
+                       amountTagType(stat.level) === 'info' ? '#2080f0' : '#dcdfe6'
+                     )}33; border-radius:6px; padding:8px; font-size:12px;`">
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+            <n-tag :type="amountTagType(stat.level)" size="tiny" :bordered="false">{{ stat.name }}</n-tag>
+            <n-text depth="3" style="font-size:11px;">共 {{ stat.buyCount + stat.sellCount + stat.neutralCount }} 笔</n-text>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:2px; line-height:1.5;">
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:#d03050;">买 {{ stat.buyPercent.toFixed(1) }}%</span>
+              <span style="color:#d03050;">{{ formatWan(stat.buyAmount) }}万</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:#18a058;">卖 {{ stat.sellPercent.toFixed(1) }}%</span>
+              <span style="color:#18a058;">{{ formatWan(stat.sellAmount) }}万</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:#909399;">中性 {{ stat.neutralPercent.toFixed(1) }}%</span>
+              <span style="color:#909399;">{{ formatWan(stat.neutralAmount) }}万</span>
+            </div>
+            <div style="border-top:1px dashed #dcdfe6; margin-top:4px; padding-top:4px; display:flex; justify-content:space-between; font-weight:bold;">
+              <span>净流入</span>
+              <span :style="`color:${stat.netInflow >= 0 ? '#d03050' : '#18a058'};`">
+                {{ stat.netInflow >= 0 ? '+' : '' }}{{ formatWan(stat.netInflow) }}万
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 各档位累计净流入金额变化折线图 -->
+      <div ref="tdxNetInflowChartRef" style="width: 100%; height: 200px;"></div>
+
+      <n-data-table
+        :columns="tdxTransactionColumns"
+        :data="filteredTdxTransactionList"
+        :pagination="tdxTransactionPagination"
+        :loading="tdxTransactionLoading"
+        size="small"
+        striped
+        :row-key="(row) => row.key"
+        :max-height="320"
+      />
+    </div>
+  </n-modal>
 </template>
 
 <style scoped>
@@ -3078,6 +4358,14 @@ watch(modalShow6, (newVal) => {
 :deep(.n-tabs-nav .n-tabs-tab) {
   position: relative;
   cursor: pointer;
+}
+
+/* 顶部页签固定吸顶，不随内容滚动 */
+:deep(.n-tabs-nav) {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: var(--stock-tab-nav-bg, #ffffff);
 }
 
 /* 可拖拽标签的样式 */

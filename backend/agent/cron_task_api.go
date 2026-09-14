@@ -135,6 +135,8 @@ func (a *CronTaskApi) GetTaskTypes() []lo.Tuple2[string, string] {
 		{A: "market_analysis", B: "市场分析"},
 		{A: "global_stock_index_cache", B: "全球指数缓存"},
 		{A: "stock_change_save", B: "异动数据保存"},
+		{A: "daily_review", B: "每日复盘"},
+		{A: "morning_strategy", B: "盘前策略"},
 	}
 }
 
@@ -214,6 +216,10 @@ func (a *CronTaskApi) executeTaskByType(ctx context.Context, task *models.CronTa
 		return a.executeStockMonitor(ctx, task)
 	case "stock_change_save":
 		return a.executeStockChangeSave(ctx, task)
+	case "daily_review":
+		return a.executeDailyReview(ctx, task)
+	case "morning_strategy":
+		return a.executeMorningStrategy(ctx, task)
 	case "custom":
 		return a.executeCustomTask(ctx, task)
 	default:
@@ -364,6 +370,61 @@ func (a *CronTaskApi) executeMarketAnalysis(ctx context.Context, task *models.Cr
 	}
 	logger.SugaredLogger.Infof("content:%s", content.String())
 	data.NewDeepSeekOpenAi(ctx, params.AiConfigId).SaveAIResponseResult("市场分析", "市场分析", content.String(), "", prompt)
+	return nil
+}
+
+// reportTaskParams 每日复盘/盘前策略任务共用参数
+type reportTaskParams struct {
+	AiConfigId   int    `json:"aiConfigId"`
+	SysPromptId  int    `json:"sysPromptId"`
+	Thinking     bool   `json:"thinking"`
+	AgentMode    string `json:"agentMode"`
+	IncludeLhb    bool   `json:"includeLhb"`
+	PushFeishu   bool   `json:"pushFeishu"`
+	PushDingDing bool   `json:"pushDingDing"`
+}
+
+func (a *CronTaskApi) executeDailyReview(ctx context.Context, task *models.CronTask) error {
+	logger.SugaredLogger.Infof("执行每日复盘任务：%s", task.Name)
+	var params reportTaskParams
+	if task.Params != "" {
+		if err := json.Unmarshal([]byte(task.Params), &params); err != nil {
+			logger.SugaredLogger.Errorf("解析任务参数失败：%v", err)
+			return err
+		}
+	}
+	review, err := NewDailyReviewApi().GenerateDailyReview(ctx, "", FirstAiConfigId(params.AiConfigId), params.SysPromptId, params.Thinking, params.AgentMode, "cron")
+	if err != nil {
+		return err
+	}
+	if review == nil {
+		return nil // 非交易日跳过
+	}
+	if params.PushFeishu || params.PushDingDing {
+		pushReportExternal("每日复盘 "+review.ReviewDate, review.Content, params.PushFeishu, params.PushDingDing)
+	}
+	return nil
+}
+
+func (a *CronTaskApi) executeMorningStrategy(ctx context.Context, task *models.CronTask) error {
+	logger.SugaredLogger.Infof("执行盘前策略任务：%s", task.Name)
+	var params reportTaskParams
+	if task.Params != "" {
+		if err := json.Unmarshal([]byte(task.Params), &params); err != nil {
+			logger.SugaredLogger.Errorf("解析任务参数失败：%v", err)
+			return err
+		}
+	}
+	strategy, err := NewMorningStrategyApi().GenerateMorningStrategy(ctx, "", FirstAiConfigId(params.AiConfigId), params.SysPromptId, params.Thinking, params.AgentMode, "cron")
+	if err != nil {
+		return err
+	}
+	if strategy == nil {
+		return nil // 长假期间跳过
+	}
+	if params.PushFeishu || params.PushDingDing {
+		pushReportExternal("盘前策略 "+strategy.StrategyDate, strategy.Content, params.PushFeishu, params.PushDingDing)
+	}
 	return nil
 }
 

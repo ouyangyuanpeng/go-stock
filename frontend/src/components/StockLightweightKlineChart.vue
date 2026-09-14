@@ -1,13 +1,15 @@
 <script setup>
-import { GetStockEastMoneyKLine, GetStockEastMoneyKLinePage, GetStockKLineWithFallback, GetStockKLinePageWithFallback } from '../../wailsjs/go/main/App'
+import { GetStockEastMoneyKLine, GetStockEastMoneyKLinePage, GetStockKLineWithFallback, GetStockKLinePageWithFallback, Follow, UnFollow, GetFollowList, GetGroupList, AddStockGroup, AddGroup } from '../../wailsjs/go/main/App'
+import { EventsEmit } from '../../wailsjs/runtime'
 import {
   CandlestickSeries,
   createChart,
   HistogramSeries,
   LineSeries,
   LineStyle,
+  MismatchDirection,
 } from 'lightweight-charts'
-import { NButton, NFlex, NInput, NSpin, NText, NTooltip } from 'naive-ui'
+import { NButton, NDropdown, NFlex, NInput, NModal, NSpin, NText, NTooltip, useMessage } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   smaValues, emaFinite, emaLeadingNull, weightedMaValues, bollingerBands, obvValues,
@@ -18,10 +20,17 @@ import {
   zigzagValues, satsValues, alligatorValues, aoValues, hullMaValues, adValues,
   trixValues, rocValues, fractalValues, chopValues, elderRayValues, chaikinOscValues,
   vwapBandsValues, massIndexValues, ulcerIndexValues, coppockValues, temaValues, smiValues, smcValues,
-  trixSlopeValues,
+  trixSlopeValues, temaSlopeValues, temaSlopeBundle,
+  tdSequentialValues, bbiValues, limitPriceLines, weisWaveValues, divergenceValues, limitBandEvidence,
 } from './kline/calc'
 import { makeToggle } from './kline/indicators/toggle'
 import { parseNumStr, formatPrice2, formatVolumeCn, formatAmountCn, formatPctField, formatSigned2 } from './kline/format'
+import { createMeasurePrimitive } from './kline/measurePrimitive'
+import { createWavePrimitive } from './kline/wavePrimitive'
+import { createVolumeProfilePrimitive } from './kline/volumeProfilePrimitive'
+import { createTDSequentialPrimitive } from './kline/tdSequentialPrimitive'
+import { createDivergencePrimitive } from './kline/divergencePrimitive'
+import { createDrawingHost, DRAWING_TOOLS } from './kline/drawingManagerHost'
 import {
   eastMoneyDayToUnixSeconds, eastMoneyKlineFieldToUnixSeconds, chartTimeToUtcMs,
   formatTickTime, sortKey, toChartTime, mergeKlineRows, mergeRefreshWithLatest,
@@ -32,6 +41,7 @@ import {
   CLR_RISE, CLR_FALL, DAILY_LIKE_KLT, CN_TZ,
   HISTORY_PAGE_SIZE, BARS_BEFORE_LOAD_MORE, DEFAULT_VISIBLE_BARS,
   DEFAULT_RIGHT_LOGICAL_GAP, SHOW_CHIP_TOOLBAR_BUTTON, INTERVALS,
+  ADJUST_OPTIONS, DEFAULT_ADJUST,
 } from './kline/constants'
 
 const props = defineProps({
@@ -63,6 +73,184 @@ const hoverRawRow = ref(null)
 /** 无十字线时展示：当前数据中时间最新的一根 K 线 */
 const defaultLatestRawRow = ref(null)
 const activeKlt = ref('101')
+// 场内 ETF 识别：沪市前缀 50/51/52/53/56/58，深市前缀 15/16；ETF 默认不复权且隐藏复权切换
+const isEtfCode = computed(() => {
+  const digits = String(props.code || '').replace(/[^\d]/g, '')
+  if (digits.length < 6) return false
+  const prefix = digits.substring(0, 2)
+  return ['15', '16', '50', '51', '52', '53', '56', '58'].includes(prefix)
+})
+// 港股识别：.HK 后缀或 HK 前缀；港股默认不复权（与项目约定一致），保留复权切换按钮
+const isHkCode = computed(() => {
+  const c = String(props.code || '').toUpperCase()
+  return c.endsWith('.HK') || c.startsWith('HK')
+})
+// 中证指数识别：.CSI 后缀（如 930599.CSI 中证高端装备制造）；走通达信扩展行情 ExKLine2 + category=62，
+// 协议不支持复权参数；默认不复权（与港股一致），保留复权切换按钮（东财降级源支持复权参数）
+const isCsiIndexCode = computed(() => {
+  const c = String(props.code || '').toUpperCase()
+  return c.endsWith('.CSI')
+})
+// 海外指数识别：100. 前缀（如 100.DJIA 道琼斯/100.SPX 标普500/100.NDX 纳斯达克/100.HSI 恒生）；
+// 走东方财富（secid=100.XXX），指数无复权概念，默认不复权
+const isGlobalIndexCode = computed(() => {
+  const c = String(props.code || '').toUpperCase()
+  if (!c.startsWith('100.')) return false
+  const suffix = c.slice(4)
+  if (!suffix) return false
+  // 海外指数代码为字母（DJIA/SPX/NDX/HSI），排除纯数字后缀
+  return !/[0-9]/.test(suffix)
+})
+// 复权类型：qfq=前复权(默认)、hfq=后复权、none=不复权；仅日K及更长周期有效；场内 ETF/港股/中证指数/海外指数默认 none
+const activeAdjust = ref((isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) ? 'none' : DEFAULT_ADJUST)
+// 实际传给后端的复权标识：分时周期传空串（走各数据源默认行为），日K类周期传 activeAdjust
+const adjustFlagForRequest = computed(() => {
+  return DAILY_LIKE_KLT.has(activeKlt.value) ? activeAdjust.value : ''
+})
+
+// ===== 关注功能（参考 stock.vue） =====
+const message = useMessage()
+/** 当前股票是否已关注 */
+const isFollowed = ref(false)
+/** 关注操作进行中 */
+const followLoading = ref(false)
+/** 分组列表 */
+const followGroupList = ref([])
+/** 新建分组弹窗 */
+const addGroupShow = ref(false)
+const addGroupName = ref('')
+/** 新建分组后待关注的股票内部代码（null 表示非关注流程打开的弹窗） */
+const pendingFollowCode = ref(null)
+/** 关注下拉选项：默认（不分组）+ 各分组 + 新建分组 */
+const followGroupOptions = computed(() => {
+  const opts = [{ label: '默认（不分组）', key: 0 }]
+  followGroupList.value.forEach(g => opts.push({ label: g.name, key: g.ID }))
+  opts.push({ type: 'divider', key: 'divider' })
+  opts.push({ label: '新建分组', key: 'new' })
+  return opts
+})
+
+/** 东方财富格式代码转应用内部代码（如 000001.SZ → sh000001），与 stock.vue 一致 */
+function fromEastMoneyCode(emCode) {
+  if (!emCode) return ''
+  const c = String(emCode).trim().toUpperCase()
+  if (c.endsWith('.SH')) return 'sh' + c.slice(0, -3)
+  if (c.endsWith('.SZ')) return 'sz' + c.slice(0, -3)
+  if (c.endsWith('.BJ')) return 'bj' + c.slice(0, -3)
+  if (c.endsWith('.HK')) return 'hk' + c.slice(0, -3).toLowerCase()
+  if (c.endsWith('.US')) return 'us' + c.slice(0, -3).toLowerCase()
+  return c.toLowerCase()
+}
+
+/** 刷新当前股票的关注状态 */
+async function refreshFollowStatus() {
+  if (!props.code) {
+    isFollowed.value = false
+    return
+  }
+  const internalCode = fromEastMoneyCode(props.code)
+  try {
+    const [list, groups] = await Promise.all([GetFollowList(0), GetGroupList()])
+    followGroupList.value = groups || []
+    const followed = (list || []).some(item => {
+      // followList 中 StockCode 为内部格式（如 sh000001、gb_aapl）
+      if (item.StockCode === internalCode) return true
+      // 美股 gb_ 前缀兼容：usAAPL → gb_aapl
+      if (internalCode.startsWith('us') && item.StockCode === 'gb_' + internalCode.slice(2).toLowerCase()) return true
+      return false
+    })
+    isFollowed.value = followed
+  } catch (e) {
+    // 静默失败，不阻断 K 线图渲染
+    isFollowed.value = false
+  }
+}
+
+/** 下拉选择分组后关注；key='new' 时打开新建分组弹窗 */
+function handleFollowSelect(key) {
+  if (key === 'new') {
+    if (!props.code) {
+      message.error('请输入有效股票代码')
+      return
+    }
+    pendingFollowCode.value = fromEastMoneyCode(props.code)
+    addGroupName.value = ''
+    addGroupShow.value = true
+    return
+  }
+  doFollowStock(Number(key))
+}
+
+/** 新建分组并关注当前股票 */
+function saveAddGroup() {
+  const name = addGroupName.value.trim()
+  if (!name) {
+    message.warning('请输入分组名称')
+    return
+  }
+  AddGroup({ name, sort: 1 }).then(result => {
+    message.info(result)
+    addGroupShow.value = false
+    GetGroupList().then(gList => {
+      followGroupList.value = gList || []
+      EventsEmit('groupListChanged')
+      // 创建成功后执行关注+加分组
+      if (pendingFollowCode.value) {
+        const created = (gList || []).find(g => g.name === name)
+        pendingFollowCode.value = null
+        if (created) {
+          doFollowStock(created.ID)
+        }
+      }
+    })
+  }).catch(err => message.error('新建分组失败: ' + (err?.message || err)))
+}
+
+/** 关注并加入分组（groupId=0 表示不分组） */
+function doFollowStock(groupId) {
+  if (!props.code) {
+    message.error('请输入有效股票代码')
+    return
+  }
+  if (followLoading.value) return
+  followLoading.value = true
+  const internalCode = fromEastMoneyCode(props.code)
+  Follow(internalCode).then(result => {
+    if (result === '关注成功') {
+      isFollowed.value = true
+      const groupName = followGroupList.value.find(g => g.ID === groupId)?.name || ''
+      message.success(groupId > 0 ? `已关注，并加入分组「${groupName}」` : '关注成功')
+      // 加入分组
+      if (groupId > 0) {
+        // Follow 后美股 code 被归一化为 gb_ 格式，AddStockGroup 需用同格式
+        let groupCode = internalCode
+        if (internalCode.startsWith('us')) {
+          groupCode = 'gb_' + internalCode.slice(2).toLowerCase()
+        }
+        AddStockGroup(groupId, groupCode).then(() => {
+          GetGroupList().then(gList => { followGroupList.value = gList || [] })
+        }).catch(err => message.error('加入分组失败: ' + (err?.message || err)))
+      }
+    } else {
+      message.error(result)
+    }
+  }).catch(err => message.error('关注失败: ' + (err?.message || err))).finally(() => {
+    followLoading.value = false
+  })
+}
+
+/** 取消关注 */
+function unfollowStock() {
+  if (!props.code || followLoading.value) return
+  followLoading.value = true
+  const internalCode = fromEastMoneyCode(props.code)
+  UnFollow(internalCode).then(result => {
+    message.success(result)
+    isFollowed.value = false
+  }).catch(err => message.error('取消关注失败: ' + (err?.message || err))).finally(() => {
+    followLoading.value = false
+  })
+}
 const showMA = ref(false)
 const showBOLL = ref(false)
 const showOBV = ref(false)
@@ -109,16 +297,161 @@ const showMassIndex = ref(false)
 const showUlcerIndex = ref(false)
 const showCoppock = ref(false)
 const showTEMA = ref(false)
+const showTEMASlope = ref(false)
 const showSMI = ref(false)
 const showSignalRatio = ref(false)
 const showSMC = ref(false)
 const showChip = ref(false)
+const showVolumeProfile = ref(false)
+/** 神奇九转 TD Sequential 数字标记（primitive） */
+const showTDSequential = ref(false)
+/** BBI 多空指标（主图叠加线） */
+const showBBI = ref(false)
+/** 涨跌停价位线（昨收锚定 price line） */
+const showLimitLines = ref(false)
+/** 自动背离（主图连线 primitive + 指标源选择） */
+const showDivergence = ref(false)
+/** 背离检测的指标源：'rsi' | 'macd' | 'kdj'（默认 RSI，经典 A 股教材口径） */
+const divergenceSource = ref('rsi')
+/** Weis Wave 威斯波浪（副图 histogram） */
+const showWeisWave = ref(false)
+
+// ===== 技术指标设置持久化（保存上次选择，避免每次进入重新选） =====
+const PERSIST_KEY = 'kline-indicator-settings'
+const PERSISTED_INDICATOR_REFS = [
+  showMA, showBOLL, showOBV, showMACD, showKDJ, showRSI, showATR, showVWAP,
+  showMFI, showKAMA, showKeltner, showSupertrend, showEMA, showIchimoku,
+  showCCI, showTTMSqueeze, showSAR, showDonchian, showADX, showWilliamsR,
+  showStochRSI, showCMF, showAroon, showCMO, showForceIndex, showPivot,
+  showDEMA, showZigZag, showSATS, showAvgAmp, showAlligator, showAO,
+  showHullMA, showAD, showTRIX, showTRIXSlope, showROC, showFractal,
+  showCHOP, showElderRay, showChaikinOsc, showVWAPBands, showMassIndex,
+  showUlcerIndex, showCoppock, showTEMA, showTEMASlope, showSMI, showSignalRatio, showSMC,
+  showChip, showVolumeProfile, showTDSequential, showBBI, showLimitLines,
+  showDivergence, showWeisWave,
+]
+const PERSISTED_INDICATOR_KEYS = [
+  'showMA', 'showBOLL', 'showOBV', 'showMACD', 'showKDJ', 'showRSI', 'showATR', 'showVWAP',
+  'showMFI', 'showKAMA', 'showKeltner', 'showSupertrend', 'showEMA', 'showIchimoku',
+  'showCCI', 'showTTMSqueeze', 'showSAR', 'showDonchian', 'showADX', 'showWilliamsR',
+  'showStochRSI', 'showCMF', 'showAroon', 'showCMO', 'showForceIndex', 'showPivot',
+  'showDEMA', 'showZigZag', 'showSATS', 'showAvgAmp', 'showAlligator', 'showAO',
+  'showHullMA', 'showAD', 'showTRIX', 'showTRIXSlope', 'showROC', 'showFractal',
+  'showCHOP', 'showElderRay', 'showChaikinOsc', 'showVWAPBands', 'showMassIndex',
+  'showUlcerIndex', 'showCoppock', 'showTEMA', 'showTEMASlope', 'showSMI', 'showSignalRatio', 'showSMC',
+  'showChip', 'showVolumeProfile', 'showTDSequential', 'showBBI', 'showLimitLines',
+  'showDivergence', 'showWeisWave',
+]
+const PERSISTED_KLT_SET = new Set(INTERVALS.map(it => it.klt))
+
+function loadIndicatorSettings() {
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY)
+    if (!raw) return
+    const data = JSON.parse(raw) || {}
+    PERSISTED_INDICATOR_KEYS.forEach((key, i) => {
+      if (typeof data[key] === 'boolean') PERSISTED_INDICATOR_REFS[i].value = data[key]
+    })
+    // activeKlt 校验合法值，避免脏数据导致周期异常
+    if (typeof data.activeKlt === 'string' && PERSISTED_KLT_SET.has(data.activeKlt)) {
+      activeKlt.value = data.activeKlt
+    }
+    // 背离指标源（rsi/macd/kdj）
+    if (typeof data.divergenceSource === 'string' && ['rsi', 'macd', 'kdj'].includes(data.divergenceSource)) {
+      divergenceSource.value = data.divergenceSource
+    }
+  } catch {}
+}
+
+let persistTimer = null
+function persistIndicatorSettings() {
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    try {
+      const data = { activeKlt: activeKlt.value, divergenceSource: divergenceSource.value }
+      PERSISTED_INDICATOR_KEYS.forEach((key, i) => {
+        data[key] = PERSISTED_INDICATOR_REFS[i].value
+      })
+      localStorage.setItem(PERSIST_KEY, JSON.stringify(data))
+    } catch {}
+  }, 200)
+}
+
+// setup 阶段加载上次设置（在 onMounted/loadData 之前，syncIndicators 会按这些值渲染）
+loadIndicatorSettings()
+
+// 任一指标开关或周期变化时防抖保存
+watch(
+  [...PERSISTED_INDICATOR_REFS, activeKlt, divergenceSource],
+  () => persistIndicatorSettings(),
+)
+
 const chipBins = ref(80)
 const chipCanvasRef = ref(null)
 const chipItems = ref([])
 const chipMeta = ref({ avgCost: 0, profitRatio: 0, current: 0, hoverDate: '', minPrice: 0, maxPrice: 0 })
 /** TradingView 风格「多单」：开仓 / 止损 / 止盈 价位线 */
 const showLongPosition = ref(false)
+/** 「测量」画框模式：两点画矩形，显示涨跌幅/价差/K线数/成交量（支持多框） */
+const showMeasure = ref(false)
+/** 当前正在画的框起点 { time:number, price:number } | null */
+const measureP1 = ref(null)
+/** 已完成的测量框列表 [{p1, p2, stats}] */
+const measureShapes = ref([])
+/** 测量 primitive 实例（对象引用稳定，无需响应式） */
+let measurePrimitive = null
+/** ESC 键监听句柄 */
+let measureKeydownHandler = null
+/** 「波浪」绘图模式：两点选区，自动计算 5 浪 + 斐波那契回调 + 通道 + 浪号 */
+const showWave = ref(false)
+/** 当前正在画的波浪起点 { time:number, price:number } | null */
+const waveP0 = ref(null)
+/** 已完成的波浪列表 [{p0, p5}]（仅存端点） */
+const waveShapes = ref([])
+/** 波浪 primitive 实例（对象引用稳定，无需响应式） */
+let wavePrimitive = null
+/** 「成交量分布」primitive 实例（仿 TradingView VPVR，随可见区间自动重算） */
+let volumeProfilePrimitive = null
+/** VPVR 用的 OHLCV 缓存（按 mergedRawRowsVersion 失效，避免每帧重排序） */
+const volumeProfileBarsCache = { version: -1, data: null }
+/** 「神奇九转」primitive 实例（数字标记叠加层） */
+let tdSequentialPrimitive = null
+/** 九转计数缓存（按 mergedRawRowsVersion 失效） */
+const tdSequentialCache = { version: -1, counts: null }
+/** 九转用的 OHLCV 缓存（复用 VPVR 缓存格式） */
+const tdSequentialBarsCache = { version: -1, data: null }
+/** BBI 主图叠加线 series 实例 */
+let bbiSeries = null
+/** 涨跌停价位线句柄（createPriceLine 返回，需 remove） */
+let limitPriceLineHandles = []
+/** 「自动背离」primitive 实例（主图连线+徽章） */
+let divergencePrimitive = null
+/** 背离检测结果缓存（按 mergedRawRowsVersion + source 失效） */
+const divergenceCache = { version: -1, source: '', data: null }
+/** 背离用的 OHLCV 缓存（含指标源所需字段） */
+const divergenceBarsCache = { version: -1, data: null }
+/** 波浪 ESC 键监听句柄 */
+let waveKeydownHandler = null
+// 波浪点拖拽状态（复用 longDragWindowListeners 范式）
+let waveDragActive = false              // 是否正在拖拽某个波浪点
+let waveDragTarget = null               // {shapeIndex, pointIdx} 当前拖拽目标
+let waveDragListenersOn = false         // window pointermove/up 监听是否已挂
+let waveDragSuppressClick = false       // 拖拽结束时抑制尾随的 chart click
+let wavePanePointerDownHandler = null   // pane pointerdown 监听句柄
+let lastCrosshairPoint = null           // 缓存最近一次 crosshairMove 的 param.point，供 pointerdown hitTest 复用
+/** 波浪绘制模式选项：impulse5=完整5浪，predict3=3浪预测（选p0+p3预测p4p5） */
+const WAVE_MODE_OPTIONS = [
+  { value: 'impulse5', label: '5浪' },
+  { value: 'predict3', label: '3浪预测' },
+]
+/** 当前波浪绘制模式 */
+const waveMode = ref('impulse5')
+// 绘图插件（lightweight-charts-drawing）：与波浪/测量共存，manager 自带交互绘制
+let drawingHost = null                  // drawingManagerHost 实例
+const drawingActiveTool = ref(null)     // 当前激活工具 key（null=未激活）
+const drawingTotalCount = ref(0)        // 已完成 drawing 数（清空按钮 disabled 用）
+let drawingKeydownHandler = null        // 绘图 ESC/Ctrl+Z 监听句柄
 const longEntryStr = ref('')
 const longStopStr = ref('')
 const longTakeProfitStr = ref('')
@@ -262,6 +595,7 @@ const ind = {
   ulcerLine: null,
   coppockLine: null,
   temaLine: null,
+  temaSlopeLine: null,
   smiLine: null,
   smiSignal: null,
   smcSwingHigh: null,
@@ -435,6 +769,8 @@ function tearDownAllSubPanes() {
   ind.trixLine = removeSeriesSafe(ind.trixLine)
   ind.trixSignal = removeSeriesSafe(ind.trixSignal)
   ind.trixSlopeHist = removeSeriesSafe(ind.trixSlopeHist)
+  ind.temaSlopeLine = removeSeriesSafe(ind.temaSlopeLine)
+  ind.temaSlopeHist = removeSeriesSafe(ind.temaSlopeHist)
   ind.rocLine = removeSeriesSafe(ind.rocLine)
   ind.chopLine = removeSeriesSafe(ind.chopLine)
   ind.elderBull = removeSeriesSafe(ind.elderBull)
@@ -448,6 +784,7 @@ function tearDownAllSubPanes() {
   ind.signalRatioBullish = removeSeriesSafe(ind.signalRatioBullish)
   ind.signalRatioBearish = removeSeriesSafe(ind.signalRatioBearish)
   ind.signalRatioNet = removeSeriesSafe(ind.signalRatioNet)
+  ind.weisWave = removeSeriesSafe(ind.weisWave)
   while (chart.panes().length > 1) {
     chart.removePane(chart.panes().length - 1)
   }
@@ -485,6 +822,7 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
   if (showAD.value) subs.push('ad')
   if (showTRIX.value) subs.push('trix')
   if (showTRIXSlope.value) subs.push('trixSlope')
+  if (showTEMASlope.value) subs.push('temaSlope')
   if (showROC.value) subs.push('roc')
   if (showCHOP.value) subs.push('chop')
   if (showElderRay.value) subs.push('elderRay')
@@ -494,6 +832,7 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
   if (showCoppock.value) subs.push('coppock')
   if (showSMI.value) subs.push('smi')
   if (showSignalRatio.value) subs.push('signalRatio')
+  if (showWeisWave.value) subs.push('weisWave')
   if (subs.length === 0) return
 
   chart.panes()[0]?.setStretchFactor(3)
@@ -706,7 +1045,7 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
         LineSeries,
         {
           ...subLineOpts,
-          color: '#3b82f6',
+          color: '#d946ef',
           lineWidth: 2,
           title: 'ADX',
           priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
@@ -956,6 +1295,45 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
         }
       }
       ind.trixSlopeHist.setData(slopeData)
+    } else if (key === 'temaSlope') {
+      // TEMA 斜率：柱状图=原始斜率(红正绿负)，曲线=EMA(5)平滑斜率(紫色)，共用价格刻度
+      const { raw, smoothed } = temaSlopeBundle(closes, 21, 5)
+      ind.temaSlopeHist = chart.addSeries(
+        HistogramSeries,
+        {
+          priceFormat: { type: 'price', precision: 3, minMove: 0.001 },
+          priceScaleId: 'temaSlope',
+        },
+        paneIdx,
+      )
+      ind.temaSlopeLine = chart.addSeries(
+        LineSeries,
+        {
+          ...subLineOpts,
+          color: '#a855f7',
+          lineWidth: 2,
+          title: 'TEMA斜率',
+          priceFormat: { type: 'price', precision: 3, minMove: 0.001 },
+          priceScaleId: 'temaSlope',
+          lastValueVisible: true,
+        },
+        paneIdx,
+      )
+      const histData = []
+      for (let i = 0; i < times.length; i++) {
+        const sv = raw[i]
+        if (sv != null && Number.isFinite(sv)) {
+          histData.push({
+            time: times[i],
+            value: sv,
+            color: sv >= 0
+              ? (i > 0 && raw[i - 1] != null && sv > raw[i - 1] ? 'rgba(239, 83, 80, 0.7)' : 'rgba(239, 83, 80, 0.35)')
+              : (i > 0 && raw[i - 1] != null && sv < raw[i - 1] ? 'rgba(38, 166, 154, 0.7)' : 'rgba(38, 166, 154, 0.35)'),
+          })
+        }
+      }
+      ind.temaSlopeHist.setData(histData)
+      ind.temaSlopeLine.setData(toLineData(times, smoothed))
     } else if (key === 'roc') {
       const roc = rocValues(closes, 12)
       ind.rocLine = chart.addSeries(
@@ -1339,6 +1717,30 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
       ind.signalRatioBullish.setData(toLineData(times, bullishArr))
       ind.signalRatioBearish.setData(toLineData(times, bearishArr))
       ind.signalRatioNet.setData(toLineData(times, netArr))
+    } else if (key === 'weisWave') {
+      // Weis Wave：ZigZag 波段量能累积（红=上涨波段推力，绿=下跌波段推力）
+      const zz = zigzagValues(highs, lows, closes, 5)
+      const { wave, colors } = weisWaveValues(vols, zz)
+      ind.weisWave = chart.addSeries(
+        HistogramSeries,
+        {
+          title: 'WeisWave',
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceFormat: { type: 'volume' },
+        },
+        paneIdx,
+      )
+      const wwData = []
+      for (let i = 0; i < times.length; i++) {
+        if (wave[i] == null) continue
+        wwData.push({
+          time: times[i],
+          value: wave[i],
+          color: colors[i] === 1 ? 'rgba(239,68,68,0.75)' : 'rgba(34,197,94,0.75)',
+        })
+      }
+      ind.weisWave.setData(wwData)
     }
     paneIdx++
   }
@@ -1350,6 +1752,16 @@ function syncSubPaneIndicators(times, closes, highs, lows, vols) {
 
 function syncIndicators() {
   if (!chart || !candleSeries) return
+
+  // 成交量分布为 primitive（非 series），不参与下方 series 重建，单独同步挂载状态
+  syncVolumeProfilePrimitive()
+  // 神奇九转为 primitive（数字标记），单独同步
+  syncTDSequentialPrimitive()
+  // 自动背离为 primitive（主图连线+徽章），单独同步
+  syncDivergencePrimitive()
+  // BBI 主图叠加线、涨跌停价位线
+  syncBBISeries()
+  syncLimitPriceLines()
 
   const { times, opens, closes, highs, lows, vols } = extractOHLCV(mergedRawRows)
   if (!times.length) {
@@ -2162,8 +2574,10 @@ const crosshairPanel = computed(() => {
     if (Number.isFinite(a10)) amp10 = a10.toFixed(2) + '%'
     if (Number.isFinite(a20)) amp20 = a20.toFixed(2) + '%'
   }
+  // 标题带上周期标签：周K/月K的涨跌幅是"上周期收盘"口径，不带标签极易误读成日K涨跌幅
+  const kltLabel = INTERVALS.find((it) => it.klt === activeKlt.value)?.label || ''
   return {
-    title: showLatestTag ? `${titleDay} · 最新` : titleDay,
+    title: [titleDay, kltLabel, showLatestTag ? '最新' : ''].filter(Boolean).join(' · '),
     open: formatPrice2(r.open),
     close: formatPrice2(r.close),
     high: formatPrice2(r.high),
@@ -2287,6 +2701,17 @@ function evaluateIndicatorSignals(endIdx) {
       if (c > v) signals.push({ name: 'TEMA', signal: 'bullish' })
       else if (c < v) signals.push({ name: 'TEMA', signal: 'bearish' })
       else signals.push({ name: 'TEMA', signal: 'neutral' })
+    }
+  }
+
+  // TEMA 斜率（趋势反转点）
+  {
+    const slope = temaSlopeValues(closes, 21)
+    const v = last(slope)
+    if (v != null) {
+      if (v > 0) signals.push({ name: 'TEMA斜率', signal: 'bullish' })
+      else if (v < 0) signals.push({ name: 'TEMA斜率', signal: 'bearish' })
+      else signals.push({ name: 'TEMA斜率', signal: 'neutral' })
     }
   }
 
@@ -2850,6 +3275,7 @@ function longPaneLocalYFromClient(clientY) {
 }
 
 function refreshLongPriceLineCursorFromCrosshair(param) {
+  if (waveDragActive) return              // 波浪拖拽优先，不抢光标
   const paneEl = getLongDragPaneElement()
   if (!paneEl) return
   if (longPositionDragActive) {
@@ -2871,6 +3297,7 @@ function refreshLongPriceLineCursorFromCrosshair(param) {
 
 function clearLongPriceLinePaneCursor() {
   if (longPositionDragActive) return
+  if (waveDragActive) return
   const paneEl = getLongDragPaneElement()
   if (paneEl) paneEl.style.cursor = ''
 }
@@ -3039,6 +3466,784 @@ function toggleLongPosition() {
     clearLongPriceLinePaneCursor()
   }
   syncLongPositionPriceLines()
+}
+
+// ===== 「测量」画框：两点画矩形，显示涨跌幅% / 价差 / K线数 / 成交量（支持多框）=====
+
+function toggleMeasure() {
+  // 互斥：开启测量时关闭波浪（直接操作状态，避免递归调用 toggleWave）
+  if (!showMeasure.value && showWave.value) {
+    showWave.value = false
+    clearAllWave()
+    detachWaveKeydown()
+  }
+  showMeasure.value = !showMeasure.value
+  if (!showMeasure.value) {
+    clearAllMeasure()
+    detachMeasureKeydown()
+  } else {
+    ensureMeasurePrimitive()
+    attachMeasureKeydown()
+  }
+}
+
+function ensureMeasurePrimitive() {
+  if (measurePrimitive || !candleSeries) return
+  measurePrimitive = createMeasurePrimitive(candleSeries)
+  // chart 重建后恢复已完成框
+  if (measureShapes.value.length > 0) {
+    measurePrimitive.setShapes(measureShapes.value)
+  }
+}
+
+/** VPVR 数据 getter：带版本缓存，primitive 每次 update 只做切片+分桶（避免每帧重排序） */
+function getVolumeProfileBars() {
+  if (volumeProfileBarsCache.version !== mergedRawRowsVersion.value) {
+    volumeProfileBarsCache.data = extractOHLCV(mergedRawRows)
+    volumeProfileBarsCache.version = mergedRawRowsVersion.value
+  }
+  return volumeProfileBarsCache.data
+}
+
+function ensureVolumeProfilePrimitive() {
+  if (volumeProfilePrimitive || !candleSeries) return
+  volumeProfilePrimitive = createVolumeProfilePrimitive(candleSeries, getVolumeProfileBars)
+}
+
+/** 按开关状态挂载/卸载成交量分布 primitive（开关点击与指标重建两条路径都走这里） */
+function syncVolumeProfilePrimitive() {
+  if (showVolumeProfile.value) {
+    ensureVolumeProfilePrimitive()
+    volumeProfilePrimitive?.requestRedraw()
+  } else if (volumeProfilePrimitive) {
+    if (candleSeries) {
+      try { candleSeries.detachPrimitive(volumeProfilePrimitive) } catch { /* ignore */ }
+    }
+    volumeProfilePrimitive = null
+  }
+}
+
+// ===== 神奇九转 TD Sequential =====
+
+/** 九转 OHLCV getter：带版本缓存 */
+function getTDSequentialBars() {
+  if (tdSequentialBarsCache.version !== mergedRawRowsVersion.value) {
+    tdSequentialBarsCache.data = extractOHLCV(mergedRawRows)
+    tdSequentialBarsCache.version = mergedRawRowsVersion.value
+  }
+  return tdSequentialBarsCache.data
+}
+
+/** 九转计数 getter：带版本缓存（算法在 calc.ts） */
+function getTDSequentialCounts() {
+  if (tdSequentialCache.version !== mergedRawRowsVersion.value) {
+    const { closes } = extractOHLCV(mergedRawRows)
+    tdSequentialCache.counts = tdSequentialValues(closes)
+    tdSequentialCache.version = mergedRawRowsVersion.value
+  }
+  return tdSequentialCache.counts
+}
+
+function ensureTDSequentialPrimitive() {
+  if (tdSequentialPrimitive || !candleSeries) return
+  tdSequentialPrimitive = createTDSequentialPrimitive(candleSeries, getTDSequentialBars, getTDSequentialCounts)
+}
+
+/** 按开关状态挂载/卸载九转 primitive */
+function syncTDSequentialPrimitive() {
+  if (showTDSequential.value) {
+    ensureTDSequentialPrimitive()
+    tdSequentialPrimitive?.requestRedraw()
+  } else if (tdSequentialPrimitive) {
+    if (candleSeries) {
+      try { candleSeries.detachPrimitive(tdSequentialPrimitive) } catch { /* ignore */ }
+    }
+    tdSequentialPrimitive = null
+  }
+}
+
+// ===== BBI 多空指标（主图叠加线）=====
+
+function clearBBISeries() {
+  if (bbiSeries) {
+    try { chart?.removeSeries(bbiSeries) } catch { /* ignore */ }
+    bbiSeries = null
+  }
+}
+
+function syncBBISeries() {
+  clearBBISeries()
+  if (!showBBI.value || !chart || !candleSeries) return
+  const { times, closes } = extractOHLCV(mergedRawRows)
+  const bbi = bbiValues(closes)
+  bbiSeries = chart.addSeries(LineSeries, {
+    color: '#f0b90b',
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    title: 'BBI',
+    // 叠加主图：与 K 线同 pane、同价格刻度
+    pane: 0,
+    overlay: true,
+  })
+  const data = []
+  for (let i = 0; i < times.length; i++) {
+    if (bbi[i] != null) data.push({ time: times[i], value: bbi[i] })
+  }
+  bbiSeries.setData(data)
+}
+
+// ===== 涨跌停价位线 =====
+
+/**
+ * 按股票代码/名称/历史行情推断 A 股涨跌幅档位；非 A 股个股（港美股/指数等）返回 null 不画线。
+ * 多信号判定（代码档位为基础，ST 5% 档三信号互补）：
+ * 1. 代码段：创业板/科创板 20%、北交所 30%（ST 同档，无 5% 之说）
+ * 2. 名称含 ST（宽松匹配：忽略空格/*号/大小写，兼容 "ST"、"*ST"、"S*ST" 及带空格变体）
+ * 3. 行情实证 limitBandEvidence.recentRegime（只认最近 10 个交易日的档位指示日）：
+ *    - 'notSt'：近10日出现 >5.6% 极值或精确触及 10% 帽 → 当前绝非 ST（纠正摘帽后名称滞后）；
+ *      注意不能用全历史极值反证——ST 股戴帽前的旧 10% 波动日永远留在 K 线窗口里，
+ *      曾因此把名称明明是 ST 的股误判成 +10%（用户实测踩坑）
+ *    - 'st'：近10日精确触及 5% 帽（ST 涨停/跌停价）→ ST 铁证
+ *    - 无名称时的兜底：全窗（除权日已剔除）从未超 ±5.6% 且反复贴 5% 帽 → ST 签名
+ */
+function inferLimitPct(evidence) {
+  // 注意 prop 名是 code（非 stockCode）；组件收到的代码为后缀格式（600519.SH / 000001.SZ / 00700.HK）或前缀格式（sh600519）
+  const code = String(props.code || '').toUpperCase()
+  if (!code) return null
+  // 港股 / 中证指数 / 海外指数 / 美股：无 A 股涨跌停概念
+  if (isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) return null
+  if (code.endsWith('.US') || code.startsWith('US')) return null
+  // 提取数字部分（兼容 600519.SH / sh600519 / 600519 等）
+  const digits = code.replace(/[^\d]/g, '')
+  if (digits.length < 6) return null
+  const pure = digits.slice(-6)
+  // 指数不画线：沪市 000 段是指数（000001.SH 上证指数，注意与深市个股 000001.SZ 平安银行区分）；深市 399 段全为指数
+  const isSH = code.endsWith('.SH') || code.startsWith('SH')
+  if ((isSH && pure.startsWith('000')) || pure.startsWith('399')) return null
+  // 创业板(30x)/科创板(68x) ±20%（ST 同样 20%）；北交所(8x/4x/920) ±30%
+  if (/^(30|68)/.test(pure)) return 0.20
+  if (/^(8|4|92)/.test(pure)) return 0.30
+  // ===== 沪深主板：10% vs ST 5% =====
+  const rawName = String(props.stockName || '')
+  const hasName = rawName.trim() !== ''
+  // 宽松 ST 匹配：去掉所有空格和 * 号后，前缀为 ST 或 SST（覆盖 ST / *ST / S*ST / * ST / S ST 等变体）
+  const nameSt = /^S?ST/i.test(rawName.replace(/[\s*]/g, ''))
+  const ev = evidence || { days: 0, maxExt: 0, stCaps: 0, recentRegime: null }
+  if (nameSt) {
+    // 仅当最近 10 个交易日内出现 >5.6% 极值/触及 10% 帽才反证（ST 任何一天都不可能超 5.6%，
+    // 越近的大波动日才能证明「当前」非 ST；戴帽前的旧 10% 波动日不作数）
+    if (ev.recentRegime === 'notSt') return 0.10
+    return 0.05
+  }
+  // 名称缺失时的数据正证：近10日精确触及 5% 帽，或全窗从未超 ±5.6% 且反复贴 5% 帽（排除长期停牌：maxExt≥2%）
+  if (!hasName) {
+    if (ev.recentRegime === 'st') return 0.05
+    if (ev.days >= 20 && ev.maxExt >= 0.02 && ev.maxExt <= 0.056 && ev.stCaps >= 2) return 0.05
+  }
+  return 0.10 // 沪深主板
+}
+
+function clearLimitPriceLines() {
+  if (limitPriceLineHandles.length === 0) return
+  if (candleSeries) {
+    for (const pl of limitPriceLineHandles) {
+      try { candleSeries.removePriceLine(pl) } catch { /* ignore */ }
+    }
+  }
+  limitPriceLineHandles = []
+}
+
+function syncLimitPriceLines() {
+  clearLimitPriceLines()
+  if (!showLimitLines.value || !candleSeries) return
+  // 涨跌停是「日级」概念：仅分时与日K绘制；周/月/季/年K的"前一根收盘"是上周期末价，算出来的是上周期首日的涨跌停，无意义
+  if (DAILY_LIKE_KLT.has(activeKlt.value) && activeKlt.value !== '101') return
+  const { times, opens, closes, highs, lows } = extractOHLCV(mergedRawRows)
+  // 行情实证（ST 档位的数据信号，与名称信号互补；opens 用于剔除除权日）
+  const evidence = limitBandEvidence(times, highs, lows, closes, opens)
+  const pct = inferLimitPct(evidence)
+  if (pct == null) return
+  const { limitUp, limitDown, prevClose } = limitPriceLines(closes, times, pct)
+  if (limitUp == null || limitDown == null) return
+  const pctLabel = Math.round(pct * 100)
+  const lines = [
+    { price: limitUp, color: '#ef4444', title: `涨停 ${formatPrice2(limitUp)}（昨收 ${formatPrice2(prevClose)} · ${pctLabel}%）`, style: LineStyle.Dashed, w: 1 },
+    { price: limitDown, color: '#22c55e', title: `跌停 ${formatPrice2(limitDown)}（昨收 ${formatPrice2(prevClose)} · ${pctLabel}%）`, style: LineStyle.Dashed, w: 1 },
+  ]
+  for (const l of lines) {
+    const pl = candleSeries.createPriceLine({
+      price: l.price,
+      color: l.color,
+      lineWidth: l.w,
+      lineStyle: l.style,
+      axisLabelVisible: true,
+      title: l.title,
+    })
+    limitPriceLineHandles.push(pl)
+  }
+}
+
+// ===== 自动背离 Divergence =====
+
+/** 背离 OHLCV getter：带版本缓存 */
+function getDivergenceBars() {
+  if (divergenceBarsCache.version !== mergedRawRowsVersion.value) {
+    divergenceBarsCache.data = extractOHLCV(mergedRawRows)
+    divergenceBarsCache.version = mergedRawRowsVersion.value
+  }
+  return divergenceBarsCache.data
+}
+
+/**
+ * 背离检测 getter：带版本+指标源缓存
+ * 指标源：rsi(14) / macd(DIF) / kdj(K) —— 都是 A 股教材经典背离口径
+ */
+function getDivergenceData() {
+  const src = divergenceSource.value
+  if (divergenceCache.version === mergedRawRowsVersion.value && divergenceCache.source === src) {
+    return divergenceCache.data
+  }
+  const { closes, highs, lows } = extractOHLCV(mergedRawRows)
+  let indicator = null
+  // 注意 calc 返回结构：rsiBundle 直接返回数组；kdjBundle 返回 {K,D,J}（大写）；macdBundle 返回 {dif,dea,hist}
+  if (src === 'macd') {
+    indicator = macdBundle(closes).dif
+  } else if (src === 'kdj') {
+    indicator = kdjBundle(highs, lows, closes).K
+  } else {
+    indicator = rsiBundle(closes)
+  }
+  if (!indicator) return null
+  divergenceCache.data = divergenceValues(closes, indicator)
+  divergenceCache.version = mergedRawRowsVersion.value
+  divergenceCache.source = src
+  return divergenceCache.data
+}
+
+function ensureDivergencePrimitive() {
+  if (divergencePrimitive || !candleSeries) return
+  divergencePrimitive = createDivergencePrimitive(candleSeries, getDivergenceBars, getDivergenceData)
+}
+
+/** 按开关状态挂载/卸载背离 primitive */
+function syncDivergencePrimitive() {
+  if (showDivergence.value) {
+    ensureDivergencePrimitive()
+    divergencePrimitive?.requestRedraw()
+  } else if (divergencePrimitive) {
+    if (candleSeries) {
+      try { candleSeries.detachPrimitive(divergencePrimitive) } catch { /* ignore */ }
+    }
+    divergencePrimitive = null
+  }
+}
+
+// ===== Weis Wave（副图 histogram）走 syncSubPaneIndicators 的 subs 挂载体系，无需独立同步函数 =====
+
+/** 清除当前正在画的预览框（保留已完成框） */
+function clearMeasure() {
+  measureP1.value = null
+  if (measurePrimitive) measurePrimitive.clearCurrent()
+}
+
+/** 清除所有测量框（切换股票/退出模式时调用） */
+function clearAllMeasure() {
+  measureP1.value = null
+  measureShapes.value = []
+  if (measurePrimitive) measurePrimitive.clearAll()
+}
+
+/** 撤销最后一个已完成框 */
+function undoLastMeasureShape() {
+  if (measureShapes.value.length === 0) return
+  measureShapes.value.pop()
+  if (measurePrimitive) measurePrimitive.removeLastShape()
+}
+
+/**
+ * 状态机（多框）：!p1 → 记 p1；否则 → 固定 p2、入列、重置开始画下一个
+ * ESC 清当前预览或撤销最后一个框；Ctrl+Z 撤销最后一个已完成框
+ */
+function handleMeasureClick(param) {
+  if (!param.point) return
+  if (param.paneIndex != null && param.paneIndex !== 0) return
+  if (param.time === undefined) return // 点击在 K 线数据范围外
+  // 取该 K 线收盘价（非鼠标精确价格），涨跌幅对应实际交易价
+  const bar = param.seriesData?.get(candleSeries)
+  const price = bar?.close == null ? NaN : Number(bar.close)
+  if (!Number.isFinite(price)) return
+  ensureMeasurePrimitive()
+  if (!measurePrimitive) return
+
+  if (!measureP1.value) {
+    // 记第一点
+    measureP1.value = { time: param.time, price }
+    measurePrimitive.setP1({ time: param.time, price })
+    measurePrimitive.setStats(null)
+  } else {
+    // 固定第二点：加入已完成列表，重置当前框开始画下一个
+    const finalP2 = { time: param.time, price }
+    const stats = computeMeasureStats(measureP1.value, finalP2)
+    const shape = { p1: measureP1.value, p2: finalP2, stats }
+    measureShapes.value.push(shape)
+    measurePrimitive.addShape(shape)
+    // 重置当前框，开始画下一个
+    measureP1.value = null
+    measurePrimitive.clearCurrent()
+  }
+}
+
+/** 实时预览：p1 已确定且未固定时，跟随十字线显示预览框 */
+function updateMeasurePreview(param) {
+  if (!showMeasure.value || !measureP1.value) return
+  if (!measurePrimitive) return
+  if (!param || !param.point || param.time === undefined) {
+    measurePrimitive.setP2(null)
+    return
+  }
+  // 取该 K 线收盘价，与点击基准一致
+  const bar = param.seriesData?.get(candleSeries)
+  const price = bar?.close == null ? NaN : Number(bar.close)
+  if (!Number.isFinite(price)) return
+  const previewP2 = { time: param.time, price }
+  measurePrimitive.setP2(previewP2)
+  measurePrimitive.setStats(computeMeasureStats(measureP1.value, previewP2))
+}
+
+/** 计算涨跌幅/价差/K线数/成交量（成交量从 mergedRawRows 累加） */
+function computeMeasureStats(p1, p2) {
+  if (!p1 || !p2) return null
+  const price1 = Number(p1.price)
+  const price2 = Number(p2.price)
+  if (!Number.isFinite(price1) || !Number.isFinite(price2) || price1 === 0) return null
+  const diff = price2 - price1
+  const pct = (diff / price1) * 100
+  // K 线 time 为 Unix 秒（number），直接数值比较
+  const lo = Math.min(p1.time, p2.time)
+  const hi = Math.max(p1.time, p2.time)
+  let barCount = 0
+  let volSum = 0
+  for (const r of mergedRawRows) {
+    const ct = toChartTime(r.day)
+    if (ct == null) continue
+    if (ct >= lo && ct <= hi) {
+      barCount++
+      const v = parseNumStr(r.volume)
+      if (Number.isFinite(v)) volSum += v
+    }
+  }
+  return { diff, pct, barCount, volSum }
+}
+
+function attachMeasureKeydown() {
+  if (measureKeydownHandler) return
+  measureKeydownHandler = (e) => {
+    if (!showMeasure.value) return
+    if (e.key === 'Escape') {
+      if (measureP1.value) {
+        clearMeasure()                       // 有正在画的框：清当前预览
+      } else if (measureShapes.value.length > 0) {
+        undoLastMeasureShape()               // 无正在画的框：撤销最后一个已完成框
+      } else {
+        toggleMeasure()                      // 无任何框：退出测量模式
+      }
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault()
+      undoLastMeasureShape()                 // Ctrl+Z 撤销最后一个已完成框
+    }
+  }
+  window.addEventListener('keydown', measureKeydownHandler, true)
+}
+
+function detachMeasureKeydown() {
+  if (measureKeydownHandler) {
+    window.removeEventListener('keydown', measureKeydownHandler, true)
+    measureKeydownHandler = null
+  }
+}
+
+// ===== 「波浪理论」绘图：两点选区，自动计算 5 浪 + 斐波那契回调 + 通道 + 浪号 =====
+
+function toggleWave() {
+  // 互斥：开启波浪时关闭绘图工具/测量
+  if (!showWave.value && drawingActiveTool.value) clearDrawingTool()
+  if (!showWave.value && showMeasure.value) {
+    showMeasure.value = false
+    clearAllMeasure()
+    detachMeasureKeydown()
+  }
+  showWave.value = !showWave.value
+  if (!showWave.value) {
+    clearAllWave()
+    detachWaveKeydown()
+  } else {
+    ensureWavePrimitive()
+    attachWaveKeydown()
+  }
+}
+
+function ensureWavePrimitive() {
+  if (wavePrimitive || !candleSeries) return
+  wavePrimitive = createWavePrimitive(candleSeries)
+  wavePrimitive.setMode(waveMode.value)
+  // chart 重建后恢复已完成波浪
+  if (waveShapes.value.length > 0) {
+    wavePrimitive.setShapes(waveShapes.value)
+  }
+}
+
+/** 清除当前正在画的预览波浪（保留已完成波浪） */
+function clearWave() {
+  waveP0.value = null
+  if (wavePrimitive) wavePrimitive.clearCurrent()
+}
+
+/** 清除所有波浪（切换股票/退出模式时调用） */
+function clearAllWave() {
+  if (waveDragActive) cancelWaveDrag()
+  waveP0.value = null
+  waveShapes.value = []
+  if (wavePrimitive) wavePrimitive.clearAll()
+}
+
+// ===== 绘图插件（lightweight-charts-drawing）：与波浪/测量共存，自实现 anchor 收集 =====
+
+/** 懒初始化 drawingHost（首次激活工具时创建，避免无谓开销） */
+function ensureDrawingHost() {
+  if (drawingHost || !chart || !candleSeries || !chartContainerRef.value) return
+  drawingHost = createDrawingHost(
+    { chart, series: candleSeries, container: chartContainerRef.value },
+    {
+      // 收集锚点中途提示：还需点击几个点
+      onProgress: ({ collected, required }) => {
+        if (collected < required) {
+          message.info(`已选 ${collected}/${required} 个锚点，还需点击 ${required - collected} 个`)
+        }
+      },
+    },
+  )
+  // 监听 drawing 增删，同步计数（清空按钮显示用）
+  drawingHost.on('drawing:added', () => { drawingTotalCount.value = drawingHost.getDrawingsCount() })
+  drawingHost.on('drawing:removed', () => { drawingTotalCount.value = drawingHost.getDrawingsCount() })
+  drawingHost.on('drawing:cleared', () => { drawingTotalCount.value = 0 })
+}
+
+/**
+ * 激活某个绘图工具（互斥关闭测量/波浪）。
+ * 同 key 再点一次 → 取消当前工具。
+ */
+function setActiveDrawingTool(toolKey) {
+  // 互斥：关闭测量/波浪
+  if (showMeasure.value) { showMeasure.value = false; clearAllMeasure(); detachMeasureKeydown() }
+  if (showWave.value) { showWave.value = false; clearAllWave(); detachWaveKeydown() }
+  if (drawingActiveTool.value === toolKey) {
+    clearDrawingTool()                      // 同 key 再点 → 取消
+    return
+  }
+  ensureDrawingHost()
+  if (!drawingHost) return
+  drawingHost.setActiveTool(toolKey)
+  drawingActiveTool.value = toolKey
+  attachDrawingKeydown()
+  const paneEl = getLongDragPaneElement()
+  if (paneEl) paneEl.style.cursor = 'crosshair'
+}
+
+/** 取消当前绘图工具（不删已完成 drawing） */
+function clearDrawingTool() {
+  if (drawingHost) drawingHost.cancelActive()
+  drawingActiveTool.value = null
+  detachDrawingKeydown()
+  const paneEl = getLongDragPaneElement()
+  if (paneEl) paneEl.style.cursor = ''
+}
+
+/** 撤销最后一个绘图 */
+function undoLastDrawing() {
+  if (drawingHost) drawingHost.undoLast()
+}
+
+/** 清空所有绘图 */
+function clearAllDrawings() {
+  if (drawingHost) drawingHost.clearAll()
+  drawingTotalCount.value = 0
+}
+
+/** 挂接绘图 ESC/Ctrl+Z 监听 */
+function attachDrawingKeydown() {
+  if (drawingKeydownHandler) return
+  drawingKeydownHandler = (e) => {
+    if (!drawingActiveTool.value) return
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      if (drawingHost && drawingHost.getDrawingsCount() > 0) {
+        // 有已完成绘图：ESC 先清空（参照 wave 范式）
+        clearAllDrawings()
+      } else {
+        // 无绘图：ESC 退出工具
+        clearDrawingTool()
+      }
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault()
+      undoLastDrawing()
+    }
+  }
+  window.addEventListener('keydown', drawingKeydownHandler, true)
+}
+
+/** 卸载绘图 ESC/Ctrl+Z 监听 */
+function detachDrawingKeydown() {
+  if (!drawingKeydownHandler) return
+  window.removeEventListener('keydown', drawingKeydownHandler, true)
+  drawingKeydownHandler = null
+}
+
+/** NDropdown 选项：按 group 分组成子菜单 */
+const drawingToolOptions = computed(() => {
+  const groups = []
+  const groupMap = new Map()
+  for (const t of DRAWING_TOOLS) {
+    let g = groupMap.get(t.group)
+    if (!g) {
+      g = { label: t.group, key: `group-${t.group}`, children: [] }
+      groupMap.set(t.group, g)
+      groups.push(g)
+    }
+    g.children.push({ label: `${t.label}（${t.anchors}点）`, key: t.key })
+  }
+  return groups
+})
+
+/** 当前激活工具的显示文案（按钮上显示） */
+const drawingActiveToolLabel = computed(() => {
+  if (!drawingActiveTool.value) return '绘图'
+  const t = DRAWING_TOOLS.find(d => d.key === drawingActiveTool.value)
+  return t ? t.label : '绘图'
+})
+
+/** NDropdown select 回调 */
+function onDrawingToolSelect(key) {
+  if (key && key.startsWith('group-')) return   // 分组标题不响应
+  setActiveDrawingTool(key)
+}
+
+/** 撤销最后一个已完成波浪 */
+function undoLastWaveShape() {
+  if (waveShapes.value.length === 0) return
+  waveShapes.value.pop()
+  if (wavePrimitive) wavePrimitive.removeLastShape()
+}
+
+/**
+ * 状态机（多波浪）：!p0 → 记 p0；否则 → 固定 p5、入列、重置开始画下一个
+ * ESC 清当前预览或撤销最后一个波浪；Ctrl+Z 撤销最后一个已完成波浪
+ */
+function handleWaveClick(param) {
+  if (!param.point) return
+  if (param.paneIndex != null && param.paneIndex !== 0) return
+  if (param.time === undefined) return // 点击在 K 线数据范围外
+  // 取该 K 线收盘价（非鼠标精确价格），与测量工具一致
+  const bar = param.seriesData?.get(candleSeries)
+  const price = bar?.close == null ? NaN : Number(bar.close)
+  if (!Number.isFinite(price)) return
+  ensureWavePrimitive()
+  if (!wavePrimitive) return
+
+  if (!waveP0.value) {
+    // 记起点 p0
+    waveP0.value = { time: param.time, price }
+    wavePrimitive.setP0({ time: param.time, price })
+  } else {
+    // 固定终点 p5：加入已完成列表，重置当前波浪开始画下一个
+    const finalP5 = { time: param.time, price }
+    const shape = { p0: waveP0.value, p5: finalP5, mode: waveMode.value }
+    waveShapes.value.push(shape)
+    wavePrimitive.addShape(shape)
+    // 重置当前波浪，开始画下一个
+    waveP0.value = null
+    wavePrimitive.clearCurrent()
+  }
+}
+
+/** 实时预览：p0 已确定且未固定时，跟随十字线显示预览波浪 */
+function updateWavePreview(param) {
+  if (!showWave.value || !waveP0.value) return
+  if (!wavePrimitive) return
+  if (!param || !param.point || param.time === undefined) {
+    wavePrimitive.setP5(null)
+    return
+  }
+  // 取该 K 线收盘价，与点击基准一致
+  const bar = param.seriesData?.get(candleSeries)
+  const price = bar?.close == null ? NaN : Number(bar.close)
+  if (!Number.isFinite(price)) return
+  const previewP5 = { time: param.time, price }
+  wavePrimitive.setP5(previewP5)
+}
+
+function attachWaveKeydown() {
+  if (waveKeydownHandler) return
+  waveKeydownHandler = (e) => {
+    if (!showWave.value) return
+    // 拖拽中 ESC/Ctrl+Z 改为取消拖拽（不撤销 shape）
+    if (waveDragActive) { cancelWaveDrag(); e.preventDefault(); return }
+    if (e.key === 'Escape') {
+      if (waveP0.value) {
+        clearWave()                            // 有正在画的波浪：清当前预览
+      } else if (waveShapes.value.length > 0) {
+        undoLastWaveShape()                    // 无正在画的波浪：撤销最后一个已完成波浪
+      } else {
+        toggleWave()                           // 无任何波浪：退出波浪模式
+      }
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault()
+      undoLastWaveShape()                      // Ctrl+Z 撤销最后一个已完成波浪
+    }
+  }
+  window.addEventListener('keydown', waveKeydownHandler, true)
+}
+
+function detachWaveKeydown() {
+  if (waveKeydownHandler) {
+    window.removeEventListener('keydown', waveKeydownHandler, true)
+    waveKeydownHandler = null
+  }
+}
+
+// ===== 波浪点拖拽（复用 longDragWindowListeners 范式：pane pointerdown 命中 → window pointermove/up）=====
+
+/** 把拖拽中的端点/中间点变更同步到 waveShapes.value（数据源）+ wavePrimitive（镜像） */
+function updateWaveShapePoint(shapeIndex, pointIdx, pt) {
+  const shape = waveShapes.value[shapeIndex]
+  if (!shape) return
+  const mode = shape.mode || 'impulse5'
+  const anchorIdx = mode === 'predict3' ? 3 : 5
+  if (pointIdx === 0) {
+    shape.p0 = pt
+    shape.overrides = undefined            // 拖端点 → 清中间点覆盖，重算斐波那契
+  } else if (pointIdx === anchorIdx) {
+    shape.p5 = pt
+    shape.overrides = undefined            // predict3 拖 P3 同样清 overrides[4/5]
+  } else {
+    shape.overrides ||= {}
+    shape.overrides[pointIdx] = pt
+  }
+  if (wavePrimitive) wavePrimitive.updatePoint(shapeIndex, pointIdx, pt)
+}
+
+function onWavePanePointerDown(e) {
+  if (drawingActiveTool.value) return       // 绘图工具激活时禁用波浪拖拽
+  if (!showWave.value || !wavePrimitive) return
+  // 仅左键/触摸（参照 long 范式）
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  // 正在画新波浪的第二点时禁拖（waveP0 已设，避免与 handleWaveClick 冲突）
+  if (waveP0.value) return
+  // 优先用缓存的 crosshair 点（坐标系已对齐），无缓存则用 rect 计算本地坐标
+  let mx, my
+  if (lastCrosshairPoint) {
+    mx = lastCrosshairPoint.x
+    my = lastCrosshairPoint.y
+  } else {
+    const paneEl = getLongDragPaneElement()
+    if (!paneEl) return
+    const r = paneEl.getBoundingClientRect()
+    mx = e.clientX - r.left
+    my = e.clientY - r.top
+  }
+  const hit = wavePrimitive.hitTest(mx, my)
+  if (!hit) return
+  waveDragActive = true
+  waveDragTarget = hit
+  waveDragSuppressClick = true
+  attachWaveDragWindowListeners()
+  const paneEl = getLongDragPaneElement()
+  if (paneEl) paneEl.style.cursor = 'grabbing'
+  e.preventDefault()
+}
+
+function onWaveDragWindowMove(e) {
+  if (!waveDragActive || !waveDragTarget || !chart || !candleSeries) return
+  const paneEl = getLongDragPaneElement()
+  if (!paneEl) return
+  const r = paneEl.getBoundingClientRect()
+  const localX = e.clientX - r.left
+  // snap 到最近 K 线：coordinateToLogical 两根之间返回浮点（不返回 null），越界返回 null
+  // 不用 coordinateToTime+findRawRowByChartTime（两根之间返回 null + O(n) 扫描）
+  const logical = chart.timeScale().coordinateToLogical(localX)
+  if (logical == null) return
+  const idx = Math.max(0, Math.round(logical))
+  // 越界时 NearestLeft 兜底到最后一根；idx<0 已被 Math.max(0,...) 挡住
+  const bar = candleSeries.dataByIndex(idx, MismatchDirection.NearestLeft)
+  if (!bar) return
+  const price = Number(bar.close)
+  if (!Number.isFinite(price)) return
+  const pt = { time: bar.time, price }
+  updateWaveShapePoint(waveDragTarget.shapeIndex, waveDragTarget.pointIdx, pt)
+}
+
+function onWaveDragWindowUp() {
+  waveDragActive = false
+  waveDragTarget = null
+  detachWaveDragWindowListeners()
+  // pointerup → click → setTimeout(0) 顺序，抑制尾随 click（参照 long 范式）
+  setTimeout(() => { waveDragSuppressClick = false }, 0)
+  // 复位光标，让下一次 crosshairMove 重新决定
+  const paneEl = getLongDragPaneElement()
+  if (paneEl) paneEl.style.cursor = ''
+}
+
+function attachWaveDragWindowListeners() {
+  if (waveDragListenersOn) return
+  waveDragListenersOn = true
+  window.addEventListener('pointermove', onWaveDragWindowMove, true)
+  window.addEventListener('pointerup', onWaveDragWindowUp, true)
+  window.addEventListener('pointercancel', onWaveDragWindowUp, true)
+}
+
+function detachWaveDragWindowListeners() {
+  if (!waveDragListenersOn) return
+  waveDragListenersOn = false
+  window.removeEventListener('pointermove', onWaveDragWindowMove, true)
+  window.removeEventListener('pointerup', onWaveDragWindowUp, true)
+  window.removeEventListener('pointercancel', onWaveDragWindowUp, true)
+}
+
+/** 取消正在进行的拖拽（不回滚已改的 shape；ESC/切换股票/清理时调用） */
+function cancelWaveDrag() {
+  if (!waveDragActive) return
+  waveDragActive = false
+  waveDragTarget = null
+  detachWaveDragWindowListeners()
+  waveDragSuppressClick = false
+  const paneEl = getLongDragPaneElement()
+  if (paneEl) paneEl.style.cursor = ''
+}
+
+function attachWavePanePointerDown() {
+  const paneEl = getLongDragPaneElement()
+  if (!paneEl || wavePanePointerDownHandler) return
+  wavePanePointerDownHandler = onWavePanePointerDown
+  paneEl.addEventListener('pointerdown', wavePanePointerDownHandler)
+}
+
+function detachWavePanePointerDown() {
+  if (!wavePanePointerDownHandler) return
+  const paneEl = getLongDragPaneElement()
+  if (paneEl) paneEl.removeEventListener('pointerdown', wavePanePointerDownHandler)
+  wavePanePointerDownHandler = null
+}
+
+/** 波浪点 hover 光标反馈（crosshairMoveHandler 里 refreshLongPriceLineCursorFromCrosshair 之后调用） */
+function refreshWavePointCursor(param) {
+  if (waveDragActive) return              // 拖拽中光标由 onWavePanePointerDown/Up 管理
+  if (longPositionDragActive) return      // long 拖拽优先，让 long 处理
+  const paneEl = getLongDragPaneElement()
+  if (!paneEl) return
+  if (!showWave.value || !wavePrimitive || !param || param.point === undefined) return
+  if (param.paneIndex != null && param.paneIndex !== 0) return
+  const hit = wavePrimitive.hitTest(param.point.x, param.point.y)
+  if (hit) paneEl.style.cursor = 'grab'
 }
 
 function fillLongEntryFromLatestClose() {
@@ -3248,6 +4453,13 @@ function disposeChart() {
   }
   stopHistoryVisiblePoll()
   detachLongDragWindowListeners()
+  detachMeasureKeydown()
+  detachWaveKeydown()
+  detachWavePanePointerDown()
+  detachWaveDragWindowListeners()
+  waveDragActive = false
+  waveDragTarget = null
+  waveDragSuppressClick = false
   detachLongPriceLinePaneListener()
   cancelLongFocusBlurTimer()
   longFocusedPriceField.value = null
@@ -3280,6 +4492,36 @@ function disposeChart() {
       /* ignore */
     }
     clearLongPositionPriceLines()
+    if (measurePrimitive && candleSeries) {
+      try { candleSeries.detachPrimitive(measurePrimitive) } catch { /* ignore */ }
+    }
+    measurePrimitive = null
+    if (wavePrimitive && candleSeries) {
+      try { candleSeries.detachPrimitive(wavePrimitive) } catch { /* ignore */ }
+    }
+    wavePrimitive = null
+    if (volumeProfilePrimitive && candleSeries) {
+      try { candleSeries.detachPrimitive(volumeProfilePrimitive) } catch { /* ignore */ }
+    }
+    volumeProfilePrimitive = null
+    if (tdSequentialPrimitive && candleSeries) {
+      try { candleSeries.detachPrimitive(tdSequentialPrimitive) } catch { /* ignore */ }
+    }
+    tdSequentialPrimitive = null
+    if (divergencePrimitive && candleSeries) {
+      try { candleSeries.detachPrimitive(divergencePrimitive) } catch { /* ignore */ }
+    }
+    divergencePrimitive = null
+    if (bbiSeries) {
+      try { chart.removeSeries(bbiSeries) } catch { /* ignore */ }
+    }
+    bbiSeries = null
+    if (limitPriceLineHandles.length > 0 && candleSeries) {
+      for (const pl of limitPriceLineHandles) {
+        try { candleSeries.removePriceLine(pl) } catch { /* ignore */ }
+      }
+    }
+    limitPriceLineHandles = []
     chart.remove()
     chart = null
     candleSeries = null
@@ -3394,6 +4636,7 @@ async function loadOlderHistory() {
   }
   const kltSnap = activeKlt.value
   const codeSnap = props.code
+  const adjustSnap = DAILY_LIKE_KLT.has(kltSnap) ? activeAdjust.value : ''
   const oldest = mergedRawRows[0]
   const end = formatEastMoneyEndFromOldest(oldest.day, kltSnap)
   if (!end) {
@@ -3410,8 +4653,9 @@ async function loadOlderHistory() {
       kltSnap,
       HISTORY_PAGE_SIZE,
       end,
+      adjustSnap,
     )
-    if (kltSnap !== activeKlt.value || codeSnap !== props.code) return
+    if (kltSnap !== activeKlt.value || codeSnap !== props.code || adjustSnap !== adjustFlagForRequest.value) return
     const src = result?.source || ''
     if (src) activeDataSource.value = src
     const raw = result?.data
@@ -3455,6 +4699,7 @@ async function refreshLatestPoll() {
   if (!props.code || !candleSeries) return
   const kltSnap = activeKlt.value
   const codeSnap = props.code
+  const adjustSnap = DAILY_LIKE_KLT.has(kltSnap) ? activeAdjust.value : ''
   try {
     const meta = INTERVALS.find((x) => x.klt === kltSnap) || INTERVALS[0]
     const result = await GetStockKLineWithFallback(
@@ -3462,8 +4707,9 @@ async function refreshLatestPoll() {
       props.stockName || '',
       meta.klt,
       meta.limit,
+      adjustSnap,
     )
-    if (codeSnap !== props.code || activeKlt.value !== kltSnap) return
+    if (codeSnap !== props.code || activeKlt.value !== kltSnap || adjustSnap !== adjustFlagForRequest.value) return
     const src = result?.source || ''
     if (src) activeDataSource.value = src
     const raw = result?.data
@@ -3513,6 +4759,9 @@ function ensureChart() {
   chart.timeScale().subscribeVisibleTimeRangeChange(visibleTimeRangeHandler)
   startHistoryVisiblePoll()
   crosshairMoveHandler = (param) => {
+    lastCrosshairPoint = param && param.point != null ? param.point : null
+    updateMeasurePreview(param)
+    updateWavePreview(param)
     if (param.point === undefined) {
       hoverRawRow.value = null
       clearLongPriceLinePaneCursor()
@@ -3520,6 +4769,7 @@ function ensureChart() {
       return
     }
     refreshLongPriceLineCursorFromCrosshair(param)
+    refreshWavePointCursor(param)
     if (param.time === undefined) {
       hoverRawRow.value = null
       if (showChip.value) updateChipFromHover()
@@ -3536,6 +4786,18 @@ function ensureChart() {
   }
   chart.subscribeCrosshairMove(crosshairMoveHandler)
   chartClickHandler = (param) => {
+    if (waveDragSuppressClick) {
+      waveDragSuppressClick = false
+      return
+    }
+    if (showMeasure.value) {
+      handleMeasureClick(param)
+      return
+    }
+    if (showWave.value) {
+      handleWaveClick(param)
+      return
+    }
     if (longSuppressChartClick) return
     if (!candleSeries || !param.point) return
     if (param.paneIndex != null && param.paneIndex !== 0) return
@@ -3553,8 +4815,13 @@ function ensureChart() {
     applyLongClickPrice(price)
   }
   chart.subscribeClick(chartClickHandler)
+  if (showMeasure.value) ensureMeasurePrimitive()
+  if (showWave.value) ensureWavePrimitive()
   syncLongPositionPriceLines()
-  nextTick(() => attachLongPriceLineDragListeners())
+  nextTick(() => {
+    attachLongPriceLineDragListeners()
+    attachWavePanePointerDown()
+  })
 }
 
 async function loadData() {
@@ -3586,6 +4853,7 @@ async function loadData() {
       props.stockName || '',
       meta.klt,
       meta.limit,
+      adjustFlagForRequest.value,
     )
     const src = result?.source || ''
     activeDataSource.value = src
@@ -3672,9 +4940,22 @@ const toggleMassIndex = makeToggle(showMassIndex, syncIndicators)
 const toggleUlcerIndex = makeToggle(showUlcerIndex, syncIndicators)
 const toggleCoppock = makeToggle(showCoppock, syncIndicators)
 const toggleTEMA = makeToggle(showTEMA, syncIndicators)
+const toggleTEMASlope = makeToggle(showTEMASlope, syncIndicators)
 const toggleSMI = makeToggle(showSMI, syncIndicators)
 const toggleSignalRatio = makeToggle(showSignalRatio, syncIndicators)
 const toggleSMC = makeToggle(showSMC, syncIndicators)
+const toggleVolumeProfile = makeToggle(showVolumeProfile, syncVolumeProfilePrimitive)
+const toggleTDSequential = makeToggle(showTDSequential, syncTDSequentialPrimitive)
+const toggleBBI = makeToggle(showBBI, syncBBISeries)
+const toggleLimitLines = makeToggle(showLimitLines, syncLimitPriceLines)
+const toggleDivergence = makeToggle(showDivergence, syncDivergencePrimitive)
+const toggleWeisWave = makeToggle(showWeisWave, syncIndicators)
+/** 切换背离指标源（RSI/MACD/KDJ），重新检测+重绘 */
+function setDivergenceSource(src) {
+  if (divergenceSource.value === src) return
+  divergenceSource.value = src
+  syncDivergencePrimitive()
+}
 let chipUpdateTimer = null
 
 function toggleChip() {
@@ -3820,6 +5101,7 @@ onMounted(() => {
     loadData()
     console.log('[DEBUG onMounted] after loadData call')
     setupPoll()
+    refreshFollowStatus()
   })
 })
 
@@ -3831,16 +5113,44 @@ watch(
   () => props.code,
   () => {
     hoverRawRow.value = null
+    clearAllMeasure()
+    clearAllWave()
     loadData()
     setupPoll()
+    refreshFollowStatus()
   },
 )
 
 watch(activeKlt, () => {
   hoverRawRow.value = null
+  clearAllMeasure()
+  clearAllWave()
+  clearDrawingTool()
+  clearAllDrawings()
   chart?.applyOptions(chartThemeOptions(props.darkTheme))
   loadData()
   setupPoll()
+})
+
+// 切换波浪绘制模式：清空已画波浪（不同模式 shape 语义不同，避免混用）+ 同步 primitive
+watch(waveMode, (v) => {
+  clearAllWave()
+  if (wavePrimitive) wavePrimitive.setMode(v)
+})
+
+// 切换复权类型时重新加载（仅日K类周期有效，分时周期 adjustFlag 为空串不影响数据）
+watch(activeAdjust, () => {
+  if (!DAILY_LIKE_KLT.has(activeKlt.value)) return
+  hoverRawRow.value = null
+  loadData()
+})
+
+// 代码切换时（调用方未用 :key 重建组件的防御性处理）按 ETF/港股/中证指数/海外指数规则重置复权默认值
+watch(() => props.code, () => {
+  const next = (isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) ? 'none' : DEFAULT_ADJUST
+  if (activeAdjust.value !== next) {
+    activeAdjust.value = next
+  }
 })
 
 watch(
@@ -3905,6 +5215,18 @@ watch(showLongPosition, (newVal) => {
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
+                    <NButton size="tiny" :type="showBBI ? 'primary' : 'default'" :secondary="!showBBI" @click="toggleBBI">BBI</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.bbi }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showLimitLines ? 'primary' : 'default'" :secondary="!showLimitLines" @click="toggleLimitLines">涨跌停</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.limitLines }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
                     <NButton size="tiny" :type="showKAMA ? 'primary' : 'default'" :secondary="!showKAMA" @click="toggleKAMA">KAMA</NButton>
                   </template>
                   <span style="white-space: pre-line; text-align: left">{{ indicatorTips.kama }}</span>
@@ -3962,6 +5284,12 @@ watch(showLongPosition, (newVal) => {
                     <NButton size="tiny" :type="showTEMA ? 'primary' : 'default'" :secondary="!showTEMA" @click="toggleTEMA">TEMA</NButton>
                   </template>
                   <span style="white-space: pre-line; text-align: left">{{ indicatorTips.tema }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showTEMASlope ? 'primary' : 'default'" :secondary="!showTEMASlope" @click="toggleTEMASlope">TEMA斜率</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.temaSlope }}</span>
                 </NTooltip>
               </NFlex>
             </div>
@@ -4164,6 +5492,35 @@ watch(showLongPosition, (newVal) => {
                   </template>
                   <span style="white-space: pre-line; text-align: left">{{ indicatorTips.vwapBands }}</span>
                 </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showVolumeProfile ? 'primary' : 'default'" :secondary="!showVolumeProfile" @click="toggleVolumeProfile">VPVR</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.volumeProfile }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showTDSequential ? 'primary' : 'default'" :secondary="!showTDSequential" @click="toggleTDSequential">九转</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.tdSequential }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NFlex :size="2" :wrap="false">
+                      <NButton size="tiny" :type="showDivergence ? 'primary' : 'default'" :secondary="!showDivergence" @click="toggleDivergence">背离</NButton>
+                      <NButton v-if="showDivergence" size="tiny" quaternary style="padding: 0 4px; font-size: 11px" @click="setDivergenceSource(divergenceSource === 'rsi' ? 'macd' : divergenceSource === 'macd' ? 'kdj' : 'rsi')">
+                        {{ divergenceSource === 'rsi' ? 'RSI' : divergenceSource === 'macd' ? 'MACD' : 'KDJ' }}
+                      </NButton>
+                    </NFlex>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.divergence }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NButton size="tiny" :type="showWeisWave ? 'primary' : 'default'" :secondary="!showWeisWave" @click="toggleWeisWave">WWave</NButton>
+                  </template>
+                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.weisWave }}</span>
+                </NTooltip>
               </NFlex>
             </div>
             <div class="lw-kline-sidebar__section">
@@ -4221,6 +5578,37 @@ watch(showLongPosition, (newVal) => {
       </div>
       <div class="lw-kline-main">
         <NFlex :size="6" wrap style="row-gap: 4px; align-items: center">
+          <template v-if="code">
+            <NDropdown
+              v-if="!isFollowed"
+              trigger="click"
+              :options="followGroupOptions"
+              :menu-props="() => ({ style: 'max-height:300px; overflow-y:auto;' })"
+              :disabled="followLoading"
+              @select="handleFollowSelect"
+              placement="bottom-start"
+            >
+              <NButton size="tiny" type="primary" :loading="followLoading" secondary>
+                + 关注
+              </NButton>
+            </NDropdown>
+            <NTooltip :delay="500">
+              <template #trigger>
+                <NButton
+                  v-if="isFollowed"
+                  size="tiny"
+                  type="success"
+                  :loading="followLoading"
+                  secondary
+                  @click="unfollowStock"
+                >
+                  ✓ 已关注
+                </NButton>
+              </template>
+              <span>点击取消关注</span>
+            </NTooltip>
+          </template>
+          <span style="width: 12px" />
           <NText depth="3" style="font-size: 12px; margin-right: 2px">周期</NText>
           <NButton
             v-for="it in INTERVALS"
@@ -4233,6 +5621,20 @@ watch(showLongPosition, (newVal) => {
             {{ it.label }}
           </NButton>
           <span style="width: 12px" />
+          <template v-if="DAILY_LIKE_KLT.has(activeKlt) && !isEtfCode.value">
+            <NText depth="3" style="font-size: 12px; margin-right: 2px">复权</NText>
+            <NButton
+              v-for="opt in ADJUST_OPTIONS"
+              :key="opt.value"
+              size="tiny"
+              :type="activeAdjust === opt.value ? 'primary' : 'default'"
+              :secondary="activeAdjust !== opt.value"
+              @click="activeAdjust = opt.value"
+            >
+              {{ opt.label }}
+            </NButton>
+            <span style="width: 12px" />
+          </template>
           <NText depth="3" style="font-size: 12px; margin-right: 2px">多单</NText>
           <NButton
             size="tiny"
@@ -4241,6 +5643,60 @@ watch(showLongPosition, (newVal) => {
             @click="toggleLongPosition"
           >
             价位线
+          </NButton>
+          <NButton
+            size="tiny"
+            :type="showMeasure ? 'primary' : 'default'"
+            :secondary="!showMeasure"
+            @click="toggleMeasure"
+            title="画框测量涨跌幅（ESC 清除）"
+          >
+            测量
+          </NButton>
+          <NButton
+            size="tiny"
+            :type="showWave ? 'primary' : 'default'"
+            :secondary="!showWave"
+            @click="toggleWave"
+            title="波浪理论绘图（5浪 / 3浪预测，ESC 清除，Ctrl+Z 撤销）"
+          >
+            波浪
+          </NButton>
+          <template v-if="showWave">
+            <NButton
+              v-for="opt in WAVE_MODE_OPTIONS"
+              :key="opt.value"
+              size="tiny"
+              :type="waveMode === opt.value ? 'primary' : 'default'"
+              :secondary="waveMode !== opt.value"
+              @click="waveMode = opt.value"
+            >
+              {{ opt.label }}
+            </NButton>
+          </template>
+          <NDropdown
+            trigger="click"
+            :options="drawingToolOptions"
+            placement="bottom-start"
+            @select="onDrawingToolSelect"
+          >
+            <NButton
+              size="tiny"
+              :type="drawingActiveTool ? 'primary' : 'default'"
+              :secondary="!drawingActiveTool"
+              title="绘图工具（趋势线/斐波那契/仓位预测，ESC 清除，Ctrl+Z 撤销）"
+            >
+              {{ drawingActiveToolLabel }} ▾
+            </NButton>
+          </NDropdown>
+          <NButton
+            v-if="drawingTotalCount > 0"
+            size="tiny"
+            secondary
+            @click="clearAllDrawings"
+            title="清空所有绘图"
+          >
+            清空({{ drawingTotalCount }})
           </NButton>
           <NInput
             v-model:value="longEntryStr"
@@ -4482,8 +5938,7 @@ watch(showLongPosition, (newVal) => {
         </div>
         <NFlex align="center" :size="8" class="lw-kline-hint-row">
           <NText depth="3" class="lw-kline-hint-text">
-            {{ stockName || code }} ·
-            {{ 
+            {{
               realtimeIntervalMs > 0
                 ? `每 ${Math.round(realtimeIntervalMs / 1000)} 秒刷新`
                 : '切换周期后加载'
@@ -4498,6 +5953,19 @@ watch(showLongPosition, (newVal) => {
       </div>
     </div>
   </div>
+  <NModal v-model:show="addGroupShow" title="新建分组" style="width: 360px; text-align: left" preset="card">
+    <NInput
+      v-model:value="addGroupName"
+      placeholder="请输入分组名称"
+      @keyup.enter="saveAddGroup"
+    />
+    <template #footer>
+      <NFlex justify="end" :size="8">
+        <NButton size="small" type="primary" @click="saveAddGroup">保存</NButton>
+        <NButton size="small" @click="addGroupShow = false">取消</NButton>
+      </NFlex>
+    </template>
+  </NModal>
 </template>
 
 <style scoped>
@@ -4547,6 +6015,20 @@ watch(showLongPosition, (newVal) => {
   flex: 1 1 auto;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+.lw-kline-toolbar-name {
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.lw-kline-toolbar-code {
+  font-size: 12px;
+  font-weight: 400;
+  color: #94a3b8;
+  margin-left: 2px;
+}
+.lw-kline--dark .lw-kline-toolbar-code {
+  color: #64748b;
 }
 .lw-kline-longpos-hint {
   font-size: 11px;

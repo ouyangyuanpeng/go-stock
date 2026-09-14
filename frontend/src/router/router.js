@@ -3,16 +3,23 @@ import {createMemoryHistory, createRouter, createWebHashHistory, createWebHistor
 import stockView from '../components/stock.vue'
 import settingsView from '../components/settings.vue'
 import aboutView from "../components/about.vue";
-import fundView from "../components/fund.vue";
-import marketView from "../components/market.vue";
+import fundView from '../components/fund.vue'
+import marketView from '../components/market.vue'
 import agentChat from "../components/agent-chat.vue"
 import research from "../components/researchIndex.vue";
 import cronTaskManager from "../components/cron-task-manager.vue"
 import mcpServerManager from "../components/mcp-server-manager.vue"
 import klineAnalysis from "../components/kline-analysis.vue"
+import aiConfigManager from "../components/ai-config-manager.vue"
+import userProfile from "../components/user-profile.vue"
+import homeView from "../components/Home.vue";
+import dailyReview from "../components/DailyReview.vue"
+import morningStrategy from "../components/MorningStrategy.vue"
 
 const routes = [
-    { path: '/', component: stockView,name: 'stock'},
+    { path: '/', redirect: '/home'},
+    { path: '/home', component: homeView,name: 'home'},
+    { path: '/stock', component: stockView,name: 'stock'},
     { path: '/fund', component: fundView,name: 'fund' },
     { path: '/settings', component: settingsView,name: 'settings' },
     { path: '/about', component: aboutView,name: 'about' },
@@ -22,6 +29,10 @@ const routes = [
     { path: '/cron-tasks', component: cronTaskManager,name: 'cronTasks' },
     { path: '/mcp-servers', component: mcpServerManager,name: 'mcpServers' },
     { path: '/kline-analysis', component: klineAnalysis,name: 'klineAnalysis' },
+    { path: '/ai-configs', component: aiConfigManager,name: 'aiConfigs' },
+    { path: '/user-profile', component: userProfile,name: 'userProfile' },
+    { path: '/daily-review', component: dailyReview,name: 'dailyReview' },
+    { path: '/morning-strategy', component: morningStrategy,name: 'morningStrategy' },
 
 ]
 

@@ -42,6 +42,36 @@ func (a *App) LongTigerRank(date string) *[]models.LongTigerRankData {
 	return data.NewMarketNewsApi().LongTiger(date)
 }
 
+// GetLhbSeatDetail 查询个股某交易日龙虎榜买5卖5席位明细（游资/机构买卖数据）
+func (a *App) GetLhbSeatDetail(stockCode, date string) *models.LhbSeatDetailData {
+	return data.NewLhbSeatApi().GetLhbSeatDetail(stockCode, date)
+}
+
+// GetLhbDailySummary 汇总某交易日龙虎榜游资/机构动向（当日游资买了啥卖了啥）
+func (a *App) GetLhbDailySummary(date string) *models.LhbDailySummary {
+	return data.NewLhbSeatApi().GetLhbDailySummary(date)
+}
+
+// RefreshHotMoneySeats 从远程 URL 刷新游资席位名录（data/hot_money_seats.json）
+func (a *App) RefreshHotMoneySeats(url string) error {
+	return data.RefreshHotMoneySeats(url)
+}
+
+// GetHotMoneySeats 读取游资席位名录（游资名录维护页面）
+func (a *App) GetHotMoneySeats() *data.HotMoneySeatFile {
+	return data.GetHotMoneySeats()
+}
+
+// SaveHotMoneySeats 保存游资席位名录（落盘并即时生效）
+func (a *App) SaveHotMoneySeats(f *data.HotMoneySeatFile) error {
+	return data.SaveHotMoneySeats(f)
+}
+
+// ResetHotMoneySeats 重置游资席位名录为内置数据
+func (a *App) ResetHotMoneySeats() error {
+	return data.ResetHotMoneySeats()
+}
+
 func (a *App) StockResearchReport(stockCode string) []any {
 	return data.NewMarketNewsApi().StockResearchReport(stockCode, 7)
 }
@@ -84,8 +114,72 @@ func (a *App) ClsCalendar() []any {
 	return data.NewMarketNewsApi().ClsCalendar()
 }
 
+// ConceptEventList 同花顺每日炒作题材事件列表
+func (a *App) ConceptEventList(date string) *[]models.ConceptEventDay {
+	return data.NewMarketNewsApi().ConceptEventList(date)
+}
+
+// ConceptDetail 同花顺概念详情页数据（板块代码、行情、定义、成分股）
+func (a *App) ConceptDetail(conceptCode string) *models.ConceptDetailInfo {
+	return data.NewMarketNewsApi().ConceptDetail(conceptCode)
+}
+
+// ConceptKLine 同花顺概念板块 K 线数据
+func (a *App) ConceptKLine(plateCode string) *models.ConceptKLineData {
+	return data.NewMarketNewsApi().ConceptKLine(plateCode)
+}
+
+// ConceptRealHead 同花顺概念板块实时行情
+func (a *App) ConceptRealHead(plateCode string) *models.ConceptMarket {
+	return data.NewMarketNewsApi().ConceptRealHead(plateCode)
+}
+
+// GetAllConceptPlates 同花顺所有概念板块字典
+func (a *App) GetAllConceptPlates() []data.ConceptPlate {
+	return data.NewMarketNewsApi().GetAllConceptPlates()
+}
+
+// FindConceptCodeByName 通过名称查找概念代码
+func (a *App) FindConceptCodeByName(name string) string {
+	return data.NewMarketNewsApi().FindConceptCodeByName(name)
+}
+
+// ConceptStocks 同花顺概念成分股列表（分页）
+func (a *App) ConceptStocks(conceptCode string, page int) []models.ConceptStock {
+	return data.NewMarketNewsApi().ConceptStocks(conceptCode, page)
+}
+
+// GetAllIndustryPlates 同花顺所有行业板块字典
+func (a *App) GetAllIndustryPlates() []data.IndustryPlate {
+	return data.NewMarketNewsApi().GetAllIndustryPlates()
+}
+
+// IndustryDetail 同花顺行业板块详情页数据
+func (a *App) IndustryDetail(industryCode string) *models.ConceptDetailInfo {
+	return data.NewMarketNewsApi().IndustryDetail(industryCode)
+}
+
+// IndustryKLine 同花顺行业板块 K 线数据
+func (a *App) IndustryKLine(plateCode string) *models.ConceptKLineData {
+	return data.NewMarketNewsApi().IndustryKLine(plateCode)
+}
+
+// IndustryRealHead 同花顺行业板块实时行情
+func (a *App) IndustryRealHead(plateCode string) *models.ConceptMarket {
+	return data.NewMarketNewsApi().IndustryRealHead(plateCode)
+}
+
 func (a *App) GetUplimitHot(date string, limit int) map[string]any {
 	return data.NewMarketNewsApi().GetUplimitHot(date, limit)
+}
+
+// RzrqRank 融资融券排名数据
+func (a *App) RzrqRank(rzrqType, sortKey, sortType, date string, length, offset int) *models.RzrqRankData {
+	return data.NewMarketNewsApi().RzrqRank(rzrqType, sortKey, sortType, date, length, offset)
+}
+
+func (a *App) RzrqTrend(rzrqType, code string) *models.RzrqTrendData {
+	return data.NewMarketNewsApi().RzrqTrend(rzrqType, code)
 }
 
 func (a *App) IsTradingTime() bool {
@@ -174,11 +268,50 @@ func (a *App) DeleteCustomStrategy(id uint) string {
 	return data.NewCustomStrategyApi().DeleteCustomStrategy(id)
 }
 
+func (a *App) GetDailyOperationPlanList(query models.DailyOperationPlanQuery) *models.DailyOperationPlanPageData {
+	page, err := data.NewDailyOperationPlanApi().GetDailyOperationPlanList(&query)
+	if err != nil {
+		return &models.DailyOperationPlanPageData{}
+	}
+	return page
+}
+
+func (a *App) GetDailyOperationPlanByID(id uint) *models.DailyOperationPlan {
+	plan, err := data.NewDailyOperationPlanApi().GetDailyOperationPlanByID(id)
+	if err != nil {
+		return &models.DailyOperationPlan{}
+	}
+	return plan
+}
+
+func (a *App) SaveDailyOperationPlan(plan models.DailyOperationPlan) string {
+	return data.NewDailyOperationPlanApi().SaveDailyOperationPlan(plan)
+}
+
+func (a *App) DeleteDailyOperationPlan(id uint) string {
+	return data.NewDailyOperationPlanApi().DeleteDailyOperationPlan(id)
+}
+
+func (a *App) UpdateDailyOperationPlanStatus(id uint, status string) string {
+	if err := data.NewDailyOperationPlanApi().UpdateDailyOperationPlanStatus(id, status); err != nil {
+		return "更新失败:" + err.Error()
+	}
+	return "更新成功"
+}
+
+// UpdateDailyOperationPlanAlert 快速切换操作计划的盘中预警开关
+func (a *App) UpdateDailyOperationPlanAlert(id uint, enableAlert bool) string {
+	if err := data.NewDailyOperationPlanApi().UpdateDailyOperationPlanAlert(id, enableAlert); err != nil {
+		return "更新失败:" + err.Error()
+	}
+	return "更新成功"
+}
+
 func (a *App) GetAllStocks(page int, pageSize int, name string, technicalIndicators models.TechnicalIndicators) *models.AllStocksResp {
 	return data.NewStockDataApi().GetAllStocks(page, pageSize, name, technicalIndicators)
 }
 
-func (a *App) ChatWithAgent(question string, aiConfigId int, sysPromptId *int, memoryMode bool, memoryCount int, thinkingMode bool, agentMode string) {
+func (a *App) ChatWithAgent(question string, aiConfigId int, sysPromptId *int, memoryMode bool, memoryCount int, thinkingMode bool, agentMode string, sessionId string, skillDirName string, imagesJSON string) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.SugaredLogger.Errorf("ChatWithAgent panic: %v", r)
@@ -199,11 +332,102 @@ func (a *App) ChatWithAgent(question string, aiConfigId int, sysPromptId *int, m
 		a.agentMu.Unlock()
 	}()
 
-	ch := agent.NewStockAiAgentApi().ChatWithContext(ctx, question, aiConfigId, sysPromptId, memoryMode, memoryCount, thinkingMode, agentMode)
+	// sessionId 作为 optsOverride[1] 传入，ChatWithContext 中会覆盖默认的 sessionID，
+	// 使记忆按前端会话隔离：新对话生成新 sessionId，切换模型保持同一 sessionId。
+	// 技能选择（支持逗号分隔多选）：用户选定技能后构建
+	//   - sysPromptOverride（optsOverride[0]）：技能全文 + 激活纪律（强制主 Agent 应用方法论并在委派时传播）
+	//   - questionBlock（optsOverride[3]）：随用户消息提交的激活块，经 task 委派描述触达子 Agent
+	//   - imagesJSON（optsOverride[4]）：当前提问携带的图片列表 JSON（http(s) 外链或 base64 data URL），
+	//     仅视觉模型生效，参考 https://api-docs.deepseek.com/zh-cn/guides/vision/
+	// 并将 sysPromptId 置空以彻底忽略用户选择的系统提示词。
+	// 前端同时会把已选技能名以 @技能名 形式拼入提问文本一起提交。
+	effectiveSysPromptId := sysPromptId
+	skillPromptOverride := ""
+	skillQuestionBlock := ""
+	if strings.TrimSpace(skillDirName) != "" {
+		skillPromptOverride, skillQuestionBlock = buildSkillContext(skillDirName)
+		if skillPromptOverride == "" {
+			logger.SugaredLogger.Warnf("ChatWithAgent: 技能 %q 全部加载失败，回退到默认系统提示词", skillDirName)
+		} else {
+			effectiveSysPromptId = nil
+		}
+	}
+	// optsOverride 位序（ChatWithContext 定义）：[0]sysPromptOverride [1]sessionIDOverride
+	// [2]resumeContextOverride [3]skillQuestionBlock [4]imagesJSON。
+	// 此处不使用 resumeContext（传空占位），漏传会导致后续参数整体左移错位——
+	// 曾导致 imagesJSON 被读作 skillQuestionBlock 拼进用户消息文本（图片 URL 以
+	// 文本形式出现，模型用工具去 fetch 而非视觉识别），真正的图片解析位永远为空。
+	ch := agent.NewStockAiAgentApi().ChatWithContext(ctx, question, aiConfigId, effectiveSysPromptId, memoryMode, memoryCount, thinkingMode, agentMode, skillPromptOverride, sessionId, "", skillQuestionBlock, strings.TrimSpace(imagesJSON))
 	for msg := range ch {
 		runtime.EventsEmit(a.ctx, "agent-message", agentMessageToFrontendMap(msg))
 	}
 	runtime.EventsEmit(a.ctx, "agent-message", agentMessageToFrontendMap(&schema.Message{
+		Role:    schema.Assistant,
+		Content: "agent-DONE",
+	}))
+}
+
+// ChatWithAgentKBQA 「知识库问答」专用 Agent 调用。
+//
+// 与 ChatWithAgent 的区别：
+//   - 将前端已检索到的统一命中片段（hitsJSON）注入为系统提示词（sysPromptOverride），
+//     引导 Agent 基于这些知识库内容综合回答，避免重复调用知识库检索工具
+//   - 不带历史记忆（memoryMode=false），每次问答独立
+//   - 流式输出在独立事件 "kb-qa-message" 上，避免与主聊天 "agent-message" 冲突
+//   - 复用 a.agentCancel，与主聊天互斥（同一时刻仅一个 Agent 运行）
+//
+// 参数：
+//   - question: 用户问题（原样作为 user message）
+//   - aiConfigId: AI 服务 ID
+//   - agentMode: Agent 模式（""=默认, react/plan_execute/deepagents）
+//   - hitsJSON: 前端 SearchAllKnowledge 返回结果的 JSON 字符串（[]UnifiedKnowledgeHit）
+//
+// 前端可通过 AbortChatWithAgent 中止（共享同一 cancel）。
+func (a *App) ChatWithAgentKBQA(question string, aiConfigId int, agentMode, hitsJSON string) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.SugaredLogger.Errorf("ChatWithAgentKBQA panic: %v", r)
+			runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
+				Role:    schema.Assistant,
+				Content: fmt.Sprintf("❌ 知识库问答异常: %v", r),
+			}))
+			runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
+				Role:    schema.Assistant,
+				Content: "agent-DONE",
+			}))
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.agentMu.Lock()
+	if a.agentCancel != nil {
+		a.agentCancel()
+	}
+	a.agentCancel = cancel
+	a.agentMu.Unlock()
+
+	defer func() {
+		a.agentMu.Lock()
+		a.agentCancel = nil
+		a.agentMu.Unlock()
+	}()
+
+	// 解析前端传入的命中片段，构造知识库问答系统提示词
+	var hits []agent.UnifiedKnowledgeHit
+	if strings.TrimSpace(hitsJSON) != "" {
+		if err := json.Unmarshal([]byte(hitsJSON), &hits); err != nil {
+			logger.SugaredLogger.Warnf("ChatWithAgentKBQA: 解析 hitsJSON 失败，将以无上下文方式回答: %v", err)
+			hits = nil
+		}
+	}
+	sysPromptOverride := agent.BuildKBQASystemPrompt(hits)
+
+	// sysPromptId=nil（使用 override）, memoryMode=false, memoryCount=0, thinkingMode=false, sessionId=""
+	ch := agent.NewStockAiAgentApi().ChatWithContext(ctx, question, aiConfigId, nil, false, 0, false, agentMode, sysPromptOverride, "")
+	for msg := range ch {
+		runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(msg))
+	}
+	runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
 		Role:    schema.Assistant,
 		Content: "agent-DONE",
 	}))
@@ -481,11 +705,18 @@ func (a *App) GetStockRealTimePrice(stockCode string) map[string]any {
 	if price == 0 {
 		price, _ = convertor.ToFloat(stock.PreClose)
 	}
+	preClose, _ := convertor.ToFloat(stock.PreClose)
+	changePercent := 0.0
+	if preClose > 0 {
+		changePercent = (price - preClose) / preClose * 100
+	}
 	return map[string]any{
-		"code":    0,
-		"message": "success",
-		"price":   price,
-		"name":    stock.Name,
+		"code":          0,
+		"message":       "success",
+		"price":         price,
+		"name":          stock.Name,
+		"preClose":      preClose,
+		"changePercent": changePercent,
 	}
 }
 
@@ -537,4 +768,9 @@ func (a *App) GetConceptFundFlowTopListByDate(date string, topN int) []models.Co
 // GetAllConceptCodes 获取所有概念代码
 func (a *App) GetAllConceptCodes() []map[string]string {
 	return data.NewConceptFundFlowApi().GetAllConceptCodes()
+}
+
+// GetBKConstituentStocks 获取板块/概念的成分股实时行情（按主力净流入降序）
+func (a *App) GetBKConstituentStocks(bkCode string) []models.BKConstituentStock {
+	return data.NewBKConstituentsApi().GetBKConstituentStocks(bkCode)
 }

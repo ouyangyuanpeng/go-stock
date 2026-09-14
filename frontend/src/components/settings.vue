@@ -1,5 +1,6 @@
 <script setup>
 import {h, onBeforeUnmount, onMounted, ref} from "vue";
+import {useRouter} from "vue-router";
 import {
   AddPrompt,
   DelPrompt,
@@ -7,10 +8,13 @@ import {
   GetConfig,
   GetPromptTemplates,
   SendDingDingMessageByType,
+  SendFeishuMessageByType,
+  StartFeishuBot,
+  StopFeishuBot,
+  GetFeishuBotStatus,
   UpdateConfig,
+  UpdateAiConfigs,
   CheckSponsorCode,
-  FetchAiModels,
-  FetchAiModelInfo
 } from "../../wailsjs/go/main/App";
 import {NTag, NTooltip, NIcon, useMessage} from "naive-ui";
 import {data, models} from "../../wailsjs/go/models";
@@ -18,6 +22,7 @@ import {EventsEmit} from "../../wailsjs/runtime";
 import {HelpCircleFilledIcon, HelpIcon} from "tdesign-icons-vue-next";
 
 const message = useMessage()
+const router = useRouter()
 
 const formRef = ref(null)
 const formValue = ref({
@@ -28,6 +33,23 @@ const formValue = ref({
   dingPush: {
     enable: false,
     dingRobot: ''
+  },
+  feishuPush: {
+    enable: false,
+    feishuRobot: '',
+    feishuSecret: ''
+  },
+  feishuBot: {
+    enable: false,
+    appId: '',
+    appSecret: '',
+    aiConfigId: 0,
+    sysPromptId: 0,
+    enableTools: true,
+    thinking: false,
+    memoryEnable: false,
+    agentMode: 'react',
+    status: 'stopped'
   },
   localPush: {
     enable: true,
@@ -50,38 +72,16 @@ const formValue = ref({
   darkTheme: true,
   enableFund: false,
   enablePushNews: true,
-  enableOnlyPushRedNews: true,
+  enableOnlyPushRedNews: false,
   sponsorCode: "",
   httpProxy:"",
   httpProxyEnabled:false,
   enableAgent: false,
   qgqpBId: '',
   updateChannel: 'release',
-  promptPlazaApiBase: '',
+  // 广场服务地址固定（定制版不可修改）
+  promptPlazaApiBase: 'https://go-stock.sparkmemory.top/api',
 })
-
-// 添加一个新的AI配置到列表
-function addAiConfig() {
-  formValue.value.openAI.aiConfigs.push(new data.AIConfig({
-    name: '',
-    baseUrl: 'https://api.deepseek.com',
-    apiKey: '',
-    modelName: 'deepseek-reasoner',
-    temperature: 0.1,
-    maxTokens: 8192,
-    timeOut: 6000,
-    httpProxy:"",
-    httpProxyEnabled:false,
-    thinking: true,
-  }));
-}
-
-// 从列表中移除一个AI配置
-function removeAiConfig(index) {
-  const originalCount = formValue.value.openAI.aiConfigs.length;
-  // 使用filter创建新数组确保响应式更新
-  formValue.value.openAI.aiConfigs = formValue.value.openAI.aiConfigs.filter((_, i) => i !== index);
-}
 
 const updateChannelOptions = [
   { label: 'Release（稳定版）', value: 'release' },
@@ -89,111 +89,11 @@ const updateChannelOptions = [
   { label: 'Dev（开发版）', value: 'dev' },
 ]
 
-async function fetchAiModels(aiConfig) {
-  if (!aiConfig.baseUrl || !aiConfig.apiKey) {
-    message.warning('请先填写接口地址和 apiKey')
-    return
-  }
-  if (aiConfig._loadingModels) {
-    return
-  }
-  aiConfig._loadingModels = true
-  try {
-    const list = await FetchAiModels(aiConfig.baseUrl, aiConfig.apiKey)
-    const options = (list || []).map(id => ({ label: id, value: id }))
-    aiConfig._modelOptions = options
-    if (!aiConfig.modelName && options.length > 0) {
-      aiConfig.modelName = options[0].value
-      onModelNameChange(aiConfig, aiConfig.modelName)
-    }
-    if (!options.length) {
-      message.warning('未从接口获取到可用模型，请检查地址和 apiKey')
-    }
-  } catch (e) {
-    console.error('FetchAiModels error', e)
-    message.error('获取模型列表失败，请检查接口地址和 apiKey')
-  } finally {
-    aiConfig._loadingModels = false
-  }
-}
-
-
 const promptTemplates = ref([])
-const aiConfigExpandedNames = ref([])
 
-const aiPlatformOptions = [
-  { label: 'DeepSeek (https://api.deepseek.com)', value: 'https://api.deepseek.com' },
-  { label: '硅基流动 (https://api.siliconflow.cn/v1)', value: 'https://api.siliconflow.cn/v1' },
-  { label: '智谱AI(GLM) (https://open.bigmodel.cn/api/paas/v4)', value: 'https://open.bigmodel.cn/api/paas/v4' },
-  { label: '字节豆包(火山引擎) (https://ark.cn-beijing.volces.com/api/v3)', value: 'https://ark.cn-beijing.volces.com/api/v3' },
-  { label: '阿里云百炼 (https://dashscope.aliyuncs.com/compatible-mode/v1)', value: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
-  { label: 'Moonshot(月之暗面) (https://api.moonshot.cn/v1)', value: 'https://api.moonshot.cn/v1' },
-  { label: '腾讯混元 (https://api.hunyuan.cloud.tencent.com/v1)', value: 'https://api.hunyuan.cloud.tencent.com/v1' },
-  { label: '讯飞星火 (https://spark-api-open.xf-yun.com/v1)', value: 'https://spark-api-open.xf-yun.com/v1' },
-  { label: '零一万物 (https://api.lingyiwanwu.com/v1)', value: 'https://api.lingyiwanwu.com/v1' },
-  { label: 'MiniMax (https://api.minimax.chat/v1)', value: 'https://api.minimax.chat/v1' },
-  { label: '小米MiMo TokenPlan (https://token-plan-cn.xiaomimimo.com/v1)', value: 'https://token-plan-cn.xiaomimimo.com/v1' },
-  { label: '小米MiMo (https://api.xiaomimimo.com/v1)', value: 'https://api.xiaomimimo.com/v1' },
-  { label: '腾讯云TokenHub (https://tokenhub.tencentmaas.com/v1)', value: 'https://tokenhub.tencentmaas.com/v1' },
-  { label: 'OpenAI (https://api.openai.com/v1)', value: 'https://api.openai.com/v1' },
-  { label: 'Azure OpenAI (https://YOUR_RESOURCE.openai.azure.com)', value: 'https://YOUR_RESOURCE.openai.azure.com' },
-  { label: 'OpenRouter (https://openrouter.ai/api/v1)', value: 'https://openrouter.ai/api/v1' },
-  { label:'Ollama (http://localhost:11434/v1)', value: 'http://localhost:11434/v1' },
-]
-
-function getPlatformName(baseUrl) {
-  if (!baseUrl) return ''
-  const platform = aiPlatformOptions.find(opt => opt.value === baseUrl)
-  if (platform) {
-    const idx = platform.label.indexOf(' (')
-    return idx > 0 ? platform.label.substring(0, idx) : platform.label
-  }
-  return ''
-}
-
-function onBaseUrlChange(aiConfig, newBaseUrl) {
-  const platformName = getPlatformName(newBaseUrl)
-  if (platformName && aiConfig.name && !aiConfig.name.startsWith(platformName)) {
-    aiConfig.name = platformName + '-' + aiConfig.name
-  } else if (platformName && !aiConfig.name) {
-    aiConfig.name = platformName
-  }
-}
-
-function onModelNameChange(aiConfig, newModelName) {
-  if (!newModelName) return
-  const platformName = getPlatformName(aiConfig.baseUrl)
-  const baseName = platformName || 'AI'
-  
-  if (!aiConfig.name) {
-    aiConfig.name = baseName + '-' + newModelName
-  } else if (aiConfig.name === platformName) {
-    aiConfig.name = platformName + '-' + newModelName
-  } else {
-    const parts = aiConfig.name.split('-')
-    if (parts.length >= 2 && parts[0] === platformName) {
-      parts[parts.length - 1] = newModelName
-      aiConfig.name = parts.join('-')
-    } else if (!aiConfig.name.endsWith(newModelName)) {
-      aiConfig.name = aiConfig.name + '-' + newModelName
-    }
-  }
-
-  fetchModelInfo(aiConfig, newModelName)
-}
-
-async function fetchModelInfo(aiConfig, modelName) {
-  if (!modelName || !aiConfig.baseUrl) return
-  try {
-    const info = await FetchAiModelInfo(aiConfig.baseUrl, aiConfig.apiKey || '', modelName)
-    if (info && info.maxTokens > 0) {
-      aiConfig.maxTokens = info.maxTokens
-      const sourceLabel = info.source === 'api' ? 'API' : '内置数据'
-      message.success(`已自动设置 ${modelName} 的 MaxTokens 为 ${info.maxTokens}（来源：${sourceLabel}）`)
-    }
-  } catch (e) {
-    console.error('FetchAiModelInfo error', e)
-  }
+// 跳转到独立的 AI 模型服务管理页面
+function goAiConfigs() {
+  router.push({name: 'aiConfigs'})
 }
 
 onMounted(() => {
@@ -205,6 +105,23 @@ onMounted(() => {
     formValue.value.dingPush = {
       enable: res.dingPushEnable,
       dingRobot: res.dingRobot
+    }
+    formValue.value.feishuPush = {
+      enable: res.feishuPushEnable,
+      feishuRobot: res.feishuRobot,
+      feishuSecret: res.feishuSecret
+    }
+    formValue.value.feishuBot = {
+      enable: res.feishuBotEnable,
+      appId: res.feishuAppId || '',
+      appSecret: res.feishuAppSecret || '',
+      aiConfigId: res.feishuBotAiConfigId || 0,
+      sysPromptId: res.feishuBotSysPromptId || 0,
+      enableTools: res.feishuBotEnableTools !== false,
+      thinking: res.feishuBotThinking === true,
+      memoryEnable: res.feishuBotMemoryEnable === true,
+      agentMode: res.feishuBotAgentMode || 'react',
+      status: 'stopped'
     }
     formValue.value.localPush = {
       enable: res.localPushEnable,
@@ -237,7 +154,8 @@ onMounted(() => {
     formValue.value.enableAgent = res.enableAgent;
     formValue.value.qgqpBId = res.qgqpBId;
     formValue.value.updateChannel = res.updateChannel || 'release';
-    formValue.value.promptPlazaApiBase = res.promptPlazaApiBase || '';
+    // 广场服务地址固定（定制版不可修改），后端 GetSettingConfig 始终返回固定值，此处兜底
+    formValue.value.promptPlazaApiBase = res.promptPlazaApiBase || 'https://go-stock.sparkmemory.top/api';
 
   })
 
@@ -251,17 +169,27 @@ onBeforeUnmount(() => {
 
 function saveConfig() {
   console.log('开始保存设置', formValue.value);
-  // 构建配置时，包含aiConfigs列表
+  // AI 模型服务配置已迁移到独立页面，此处不传 aiConfigs（后端收到 nil 保留现有配置，避免覆盖）
   let config = new data.SettingConfig({
     ID: formValue.value.ID,
     dingPushEnable: formValue.value.dingPush.enable,
     dingRobot: formValue.value.dingPush.dingRobot,
+    feishuPushEnable: formValue.value.feishuPush.enable,
+    feishuRobot: formValue.value.feishuPush.feishuRobot,
+    feishuSecret: formValue.value.feishuPush.feishuSecret,
+    feishuBotEnable: formValue.value.feishuBot.enable,
+    feishuAppId: formValue.value.feishuBot.appId,
+    feishuAppSecret: formValue.value.feishuBot.appSecret,
+    feishuBotAiConfigId: formValue.value.feishuBot.aiConfigId,
+    feishuBotSysPromptId: formValue.value.feishuBot.sysPromptId,
+    feishuBotEnableTools: formValue.value.feishuBot.enableTools,
+    feishuBotThinking: formValue.value.feishuBot.thinking,
+    feishuBotMemoryEnable: formValue.value.feishuBot.memoryEnable,
+    feishuBotAgentMode: formValue.value.feishuBot.agentMode,
     localPushEnable: formValue.value.localPush.enable,
     updateBasicInfoOnStart: formValue.value.updateBasicInfoOnStart,
     refreshInterval: formValue.value.refreshInterval,
     openAiEnable: formValue.value.openAI.enable,
-    aiConfigs: formValue.value.openAI.aiConfigs,
-    // 序列化aiConfigs列表以传递给后端
     tushareToken: formValue.value.tushareToken,
     iwencaiApiKey: formValue.value.iwencaiApiKey,
     emApiKey: formValue.value.emApiKey,
@@ -282,7 +210,8 @@ function saveConfig() {
     enableAgent: formValue.value.enableAgent,
     qgqpBId: formValue.value.qgqpBId,
     updateChannel: formValue.value.updateChannel,
-    promptPlazaApiBase: formValue.value.promptPlazaApiBase,
+    // 广场服务地址固定值（后端 UpdateConfig 也会强制覆盖）
+    promptPlazaApiBase: 'https://go-stock.sparkmemory.top/api',
   })
 
   if (config.sponsorCode) {
@@ -293,7 +222,7 @@ function saveConfig() {
     })
   }
 
-  UpdateConfig(config).then(res => {
+  return UpdateConfig(config).then(res => {
     if (res === '保存成功！') {
       message.success(res)
     } else {
@@ -326,6 +255,111 @@ function sendTestNotice() {
   })
 }
 
+function sendFeishuTestNotice() {
+  let markdown = "### go-stock 飞书测试\n" + new Date()
+  // 飞书卡片 JSON 2.0 协议：schema="2.0" + body.elements + markdown 元素
+  // 文档：https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/rich-text
+  let msg = JSON.stringify({
+    msg_type: "interactive",
+    card: {
+      schema: "2.0",
+      header: {
+        title: {
+          tag: "plain_text",
+          content: "go-stock 飞书测试 " + new Date()
+        }
+      },
+      body: {
+        elements: [
+          {
+            tag: "markdown",
+            content: '<at id=all></at>\n' + markdown
+          }
+        ]
+      }
+    }
+  })
+
+  SendFeishuMessageByType(msg, "test-feishu-" + new Date().getTime(), 1).then(res => {
+    message.info(res)
+  })
+}
+
+// 飞书应用机器人控制函数（与 feishuPush 自定义机器人推送独立）
+async function startFeishuBot() {
+  // 先保存配置，确保最新 appID/appSecret/aiConfigId 已写入
+  await saveConfig()
+  try {
+    const res = await StartFeishuBot()
+    if (res && res.includes('失败')) {
+      message.error(res)
+    } else {
+      message.success(res)
+      formValue.value.feishuBot.status = 'running'
+    }
+  } catch (e) {
+    message.error('启动失败：' + e)
+  }
+}
+
+async function stopFeishuBot() {
+  try {
+    const res = await StopFeishuBot()
+    message.success(res)
+    formValue.value.feishuBot.status = 'stopped'
+  } catch (e) {
+    message.error('停止失败：' + e)
+  }
+}
+
+async function refreshFeishuBotStatus() {
+  try {
+    const res = await GetFeishuBotStatus()
+    formValue.value.feishuBot.status = res
+    message.info('当前状态：' + res)
+  } catch (e) {
+    formValue.value.feishuBot.status = 'stopped'
+  }
+}
+
+// AI 配置下拉选项（来自 openAI.aiConfigs）
+function aiConfigOptions() {
+  if (!formValue.value.openAI || !formValue.value.openAI.aiConfigs) {
+    return []
+  }
+  return formValue.value.openAI.aiConfigs.map(c => ({
+    label: `${c.name || '未命名'} [${c.modelName || '未指定'}]`,
+    value: Number(c.ID) || 0
+  }))
+}
+
+// 飞书应用机器人「系统提示词」下拉选项：从提示词模板加载，0=默认（不使用系统提示词）
+function promptTemplateOptions() {
+  const opts = [{ label: '默认（不使用系统提示词）', value: 0 }]
+  if (!promptTemplates.value || promptTemplates.value.length === 0) {
+    return opts
+  }
+  promptTemplates.value.forEach(t => {
+    const id = Number(t.ID ?? t.id) || 0
+    if (id === 0) return
+    const name = t.name ?? '未命名'
+    const type = t.type ? ` [${t.type}]` : ''
+    opts.push({ label: `${name}${type}`, value: id })
+  })
+  return opts
+}
+
+// 飞书应用机器人「Agent 模式」下拉选项
+function agentModeOptions() {
+  return [
+    { label: '快速模式（React，多轮工具调用）', value: 'react' },
+    { label: '规划模式（先规划再执行）', value: 'plan_execute' },
+    { label: '深度模式（任务规划+子Agent委派）', value: 'deepagents' },
+    { label: '直接模式（跳过Agent框架，直连OpenAI+工具调用）', value: 'direct' },
+    { label: '自动（根据问题复杂度判断）', value: '' }
+  ]
+}
+
 function exportConfig() {
   ExportConfig().then(res => {
     message.info(res)
@@ -349,12 +383,29 @@ function importConfig() {
         enable: config.dingPushEnable,
         dingRobot: config.dingRobot
       }
+      formValue.value.feishuPush = {
+        enable: config.feishuPushEnable,
+        feishuRobot: config.feishuRobot,
+        feishuSecret: config.feishuSecret
+      }
+      formValue.value.feishuBot = {
+        enable: config.feishuBotEnable,
+        appId: config.feishuAppId || '',
+        appSecret: config.feishuAppSecret || '',
+        aiConfigId: config.feishuBotAiConfigId || 0,
+        sysPromptId: config.feishuBotSysPromptId || 0,
+        enableTools: config.feishuBotEnableTools !== false,
+        thinking: config.feishuBotThinking === true,
+        memoryEnable: config.feishuBotMemoryEnable === true,
+        agentMode: config.feishuBotAgentMode || 'react',
+        status: formValue.value.feishuBot.status || 'stopped'
+      }
       formValue.value.localPush = {
         enable: config.localPushEnable,
       }
       formValue.value.updateBasicInfoOnStart = config.updateBasicInfoOnStart
       formValue.value.refreshInterval = config.refreshInterval
-      // 导入AI配置
+      // 导入AI配置（仅用于页面显示，保存时通过 UpdateAiConfigs 单独保存）
       formValue.value.openAI = {
         enable: config.openAiEnable,
         aiConfigs: config.aiConfigs || [],
@@ -376,6 +427,19 @@ function importConfig() {
       formValue.value.enableAgent = config.enableAgent
       formValue.value.qgqpBId = config.qgqpBId
       formValue.value.updateChannel = config.updateChannel || 'release'
+
+      // 导入的 AI 配置单独保存到独立管理页面所用的表
+      if (Array.isArray(config.aiConfigs) && config.aiConfigs.length > 0) {
+        UpdateAiConfigs(config.aiConfigs).then(res => {
+          if (res === '保存成功！') {
+            message.success('已导入 ' + config.aiConfigs.length + ' 个 AI 模型服务配置')
+          } else {
+            message.error('AI 模型服务配置导入失败：' + res)
+          }
+        }).catch(err => {
+          message.error('AI 模型服务配置导入失败：' + err)
+        })
+      }
     };
     reader.readAsText(file);
   };
@@ -553,32 +617,41 @@ function deletePrompt(ID) {
               </n-tooltip>
             </n-form-item-gi>
 
-            <n-form-item-gi :span="11" label="赞助码：" path="sponsorCode">
-              <n-input-group>
-                <n-input :show-count="true" placeholder="联系作者QQ或微信获取，激活VIP功能" v-model:value="formValue.sponsorCode">
-                </n-input>
-                <n-button type="success" secondary strong
-                          @click="CheckSponsorCode(formValue.sponsorCode).then((res) => {message.warning(res.msg)})">验证
-                </n-button>
-                <n-popover trigger="hover" placement="top">
-                  <template #trigger>
-                    <n-icon color="#0e7a0d" size="20">
-                      <HelpCircleFilledIcon />
-                    </n-icon>
-                  </template>
-                  <n-gradient-text :type="'warning'">
-                    <div style="max-width: 400px;text-align: left">
-                      赞助码获取方式：<br>
-                      联系作者获取赞助码，激活VIP功能<br>
-                      享受更多高级功能和优先支持
-                    </div>
-                  </n-gradient-text>
-                </n-popover>
-              </n-input-group>
+            <n-form-item-gi :span="24" path="sponsorCode" class="sponsor-code-item">
+              <div class="sponsor-code-box">
+                <div class="sponsor-code-label">
+                  <n-tag type="warning" size="small" :bordered="false" round>👑 VIP</n-tag>
+                  <span class="sponsor-code-label-text">赞助码</span>
+                  <span class="sponsor-code-label-sub">填写后激活 VIP 高级功能</span>
+                </div>
+                <n-input-group>
+                  <n-input size="large" :show-count="true" class="sponsor-code-input"
+                           placeholder="💎 联系作者QQ或微信获取赞助码，激活VIP功能"
+                           v-model:value="formValue.sponsorCode">
+                  </n-input>
+                  <n-button size="large" type="warning" strong
+                            @click="CheckSponsorCode(formValue.sponsorCode).then((res) => {message.warning(res.msg)})">立即验证
+                  </n-button>
+                  <n-popover trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon color="#f0a020" size="22">
+                        <HelpCircleFilledIcon />
+                      </n-icon>
+                    </template>
+                    <n-gradient-text :type="'warning'">
+                      <div style="max-width: 400px;text-align: left">
+                        赞助码获取方式：<br>
+                        联系作者获取赞助码，激活VIP功能<br>
+                        享受更多高级功能和优先支持
+                      </div>
+                    </n-gradient-text>
+                  </n-popover>
+                </n-input-group>
+              </div>
             </n-form-item-gi>
 
             <n-form-item-gi :span="11" label="提示词广场地址：" path="promptPlazaApiBase">
-              <n-input type="text" placeholder="http://go-stock.sparkmemory.top:1918/api" v-model:value="formValue.promptPlazaApiBase" clearable/>
+              <n-input type="text" v-model:value="formValue.promptPlazaApiBase" disabled/>
               <n-tooltip placement="top">
                 <template #trigger>
                   <n-icon color="#0e7a0d" size="20">
@@ -588,9 +661,7 @@ function deletePrompt(ID) {
                 <template #default>
                   <n-gradient-text :type="'warning'">
                   <div style="max-width: 400px;text-align: left">
-                    提示词广场服务接口地址<br>
-                    默认: http://go-stock.sparkmemory.top:1918/api<br>
-                    如已部署提示词广场服务，可修改为实际地址
+                    提示词广场服务接口地址（固定配置，不可修改）
                   </div>
                   </n-gradient-text>
                 </template>
@@ -603,6 +674,9 @@ function deletePrompt(ID) {
           <n-grid :cols="24" :x-gap="24" style="text-align: left">
             <n-form-item-gi :span="3" label="钉钉推送：" path="dingPush.enable">
               <n-switch v-model:value="formValue.dingPush.enable"/>
+            </n-form-item-gi>
+            <n-form-item-gi :span="3" label="飞书推送：" path="feishuPush.enable">
+              <n-switch v-model:value="formValue.feishuPush.enable"/>
             </n-form-item-gi>
             <n-form-item-gi :span="3" label="本地推送：" path="localPush.enable">
               <n-switch v-model:value="formValue.localPush.enable"/>
@@ -626,6 +700,107 @@ function deletePrompt(ID) {
               <n-button type="primary" @click="sendTestNotice">发送测试通知</n-button>
             </n-form-item-gi>
 
+            <n-form-item-gi :span="22" v-if="formValue.feishuPush.enable" label="飞书机器人接口地址："
+                            path="feishuPush.feishuRobot">
+              <n-input placeholder="请输入飞书自定义机器人 Webhook 地址（https://open.feishu.cn/open-apis/bot/v2/hook/...）"
+                       v-model:value="formValue.feishuPush.feishuRobot"/>
+            </n-form-item-gi>
+            <n-form-item-gi :span="22" v-if="formValue.feishuPush.enable" label="飞书签名校验 Secret："
+                            path="feishuPush.feishuSecret">
+              <n-input type="password" show-password-on="click"
+                       placeholder="可选：填写机器人安全设置的签名校验 Secret，留空则不签名"
+                       v-model:value="formValue.feishuPush.feishuSecret"/>
+              <n-button type="primary" @click="sendFeishuTestNotice">发送测试通知</n-button>
+            </n-form-item-gi>
+
+          </n-grid>
+        </n-card>
+
+        <n-card :title="() => h(NTag, { type: 'info', bordered: false }, () => '飞书应用机器人（AI对话）')" size="small">
+          <n-grid :cols="24" :x-gap="24" style="text-align: left">
+            <n-form-item-gi :span="24" label="启用飞书应用机器人" path="feishuBot.enable">
+              <n-switch v-model:value="formValue.feishuBot.enable"/>
+              <n-text depth="3" style="margin-left: 12px; font-size: 12px;">
+                通过长连接接收飞书用户消息，由 AI Agent 自动回复（与上方自定义机器人推送完全独立）
+              </n-text>
+            </n-form-item-gi>
+
+            <n-form-item-gi :span="12" v-if="formValue.feishuBot.enable" label="App ID"
+                            path="feishuBot.appId">
+              <n-input placeholder="飞书应用 App ID（cli_xxx）" v-model:value="formValue.feishuBot.appId"/>
+            </n-form-item-gi>
+            <n-form-item-gi :span="12" v-if="formValue.feishuBot.enable" label="App Secret"
+                            path="feishuBot.appSecret">
+              <n-input type="password" show-password-on="click"
+                       placeholder="飞书应用 App Secret" v-model:value="formValue.feishuBot.appSecret"/>
+            </n-form-item-gi>
+
+            <n-form-item-gi :span="8" v-if="formValue.feishuBot.enable" label="AI 配置"
+                            path="feishuBot.aiConfigId">
+              <n-select v-model:value="formValue.feishuBot.aiConfigId"
+                        :options="aiConfigOptions()"
+                        filterable
+                        placeholder="选择上方 AI 模型服务配置"/>
+            </n-form-item-gi>
+            <n-form-item-gi :span="8" v-if="formValue.feishuBot.enable" label="系统提示词"
+                            path="feishuBot.sysPromptId">
+              <n-select v-model:value="formValue.feishuBot.sysPromptId"
+                        :options="promptTemplateOptions()"
+                        filterable
+                        placeholder="选择系统提示词模板（可选）"/>
+            </n-form-item-gi>
+            <n-form-item-gi :span="8" v-if="formValue.feishuBot.enable" label="Agent 模式"
+                            path="feishuBot.agentMode">
+              <n-select v-model:value="formValue.feishuBot.agentMode"
+                        :options="agentModeOptions()"/>
+            </n-form-item-gi>
+            <n-form-item-gi :span="6" v-if="formValue.feishuBot.enable" label="启用工具调用"
+                            path="feishuBot.enableTools">
+              <n-switch v-model:value="formValue.feishuBot.enableTools"/>
+              <n-text depth="3" style="margin-left: 12px; font-size: 12px;">
+                关闭后走单轮对话（不调用工具）
+              </n-text>
+            </n-form-item-gi>
+            <n-form-item-gi :span="6" v-if="formValue.feishuBot.enable" label="深度思考"
+                            path="feishuBot.thinking">
+              <n-switch v-model:value="formValue.feishuBot.thinking"/>
+              <n-text depth="3" style="margin-left: 12px; font-size: 12px;">
+                推理模型启用后输出思考过程
+              </n-text>
+            </n-form-item-gi>
+
+            <n-form-item-gi :span="6" v-if="formValue.feishuBot.enable" label="多轮记忆"
+                            path="feishuBot.memoryEnable">
+              <n-switch v-model:value="formValue.feishuBot.memoryEnable"/>
+              <n-text depth="3" style="margin-left: 12px; font-size: 12px;">
+                开启后携带最近一轮对话上下文
+              </n-text>
+            </n-form-item-gi>
+
+            <n-form-item-gi :span="24" v-if="formValue.feishuBot.enable">
+              <n-space>
+                <n-button type="primary" @click="startFeishuBot">启动机器人</n-button>
+                <n-button type="warning" @click="stopFeishuBot">停止机器人</n-button>
+                <n-button @click="refreshFeishuBotStatus">查询状态</n-button>
+                <n-tag :type="formValue.feishuBot.status === 'running' ? 'success' : 'default'">
+                  {{ formValue.feishuBot.status === 'running' ? '运行中' : '已停止' }}
+                </n-tag>
+              </n-space>
+            </n-form-item-gi>
+
+            <n-form-item-gi :span="24" v-if="formValue.feishuBot.enable">
+              <n-gradient-text type="info">
+                <div style="font-size: 12px; line-height: 1.6;">
+                  配置步骤：<br>
+                  1. 在飞书开放平台创建企业自建应用，获取 App ID 和 App Secret<br>
+                  2. 启用「机器人」能力，添加事件订阅 im.message.receive_v1<br>
+                  3. 事件订阅页选择「使用长连接接收事件」（无需公网 IP）<br>
+                  4. 应用需发布并通过审核；权限需添加「获取用户发给机器人的单聊消息」「获取群组中所有消息」或「获取用户在群组中@机器人的消息」<br>
+                  5. 单聊直接回复；群聊需 @机器人才会回复；多轮对话记忆按 sessionID 自动隔离<br>
+                  文档：https://open.feishu.cn/document/server-side-sdk/golang-sdk-guide/handle-events
+                </div>
+              </n-gradient-text>
+            </n-form-item-gi>
           </n-grid>
         </n-card>
 
@@ -670,91 +845,12 @@ function deletePrompt(ID) {
               <n-divider title-placement="left">AI模型服务配置</n-divider>
             </n-gi>
             <n-gi :span="24" v-if="formValue.openAI.enable">
-              <n-space vertical>
-                <n-collapse v-model:expanded-names="aiConfigExpandedNames" accordion>
-                  <n-collapse-item v-for="(aiConfig, index) in formValue.openAI.aiConfigs" :key="index" :name="String(index)">
-                    <template #header>
-                      <n-flex justify="space-between" align="center" style="width: 100%;">
-                        <n-text>{{ aiConfig.name || `AI 配置 #${index + 1}` }}</n-text>
-                        <n-text depth="3" style="font-size: 12px;">{{ aiConfig.modelName || '未选择模型' }}</n-text>
-                      </n-flex>
-                    </template>
-                    <template #header-extra>
-                      <n-button type="error" size="tiny" ghost @click.stop="removeAiConfig(index)" style="margin-right: 8px;">删除</n-button>
-                    </template>
-                    <n-grid :cols="24" :x-gap="24">
-                      <n-form-item-gi :span="24" hidden label="配置ID" :path="`openAI.aiConfigs[${index}].ID`">
-                        <n-input type="text" placeholder="配置ID" v-model:value="aiConfig.ID" clearable/>
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="12" label="配置名称" :path="`openAI.aiConfigs[${index}].name`">
-                        <n-input type="text" placeholder="配置名称" v-model:value="aiConfig.name" clearable/>
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="12" label="接口地址" :path="`openAI.aiConfigs[${index}].baseUrl`">
-                        <n-select
-                          v-model:value="aiConfig.baseUrl"
-                          :options="aiPlatformOptions"
-                          filterable
-                          tag
-                          clearable
-                          placeholder="选择或输入AI接口地址"
-                          @update:value="(val) => onBaseUrlChange(aiConfig, val)"
-                        />
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="12" label="令牌(apiKey)" :path="`openAI.aiConfigs[${index}].apiKey`">
-                        <n-input type="password" placeholder="apiKey" v-model:value="aiConfig.apiKey" clearable
-                                 show-password-on="click"/>
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="8" label="模型名称" :path="`openAI.aiConfigs[${index}].modelName`">
-                        <n-select
-                          v-model:value="aiConfig.modelName"
-                          :options="aiConfig._modelOptions || []"
-                          filterable
-                          tag
-                          :loading="aiConfig._loadingModels"
-                          placeholder="点击获取模型列表或手动输入"
-                          @click="fetchAiModels(aiConfig)"
-                          @update:value="(val) => onModelNameChange(aiConfig, val)"
-                        />
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="5" label="Temperature" :path="`openAI.aiConfigs[${index}].temperature`">
-                        <n-input-number placeholder="temperature" v-model:value="aiConfig.temperature" :step="0.1"/>
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="5" label="MaxTokens" :path="`openAI.aiConfigs[${index}].maxTokens`">
-                        <n-input-number placeholder="maxTokens" v-model:value="aiConfig.maxTokens"/>
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="5" label="Timeout(秒)" :path="`openAI.aiConfigs[${index}].timeOut`">
-                        <n-input-number min="60" step="1" placeholder="超时(秒)" v-model:value="aiConfig.timeOut"/>
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="12" label="深度思考">
-                        <n-switch v-model:value="aiConfig.thinking"/>
-                        <n-tooltip placement="top">
-                          <template #trigger>
-                            <n-icon color="#0e7a0d" size="20" style="margin-left: 8px;">
-                              <HelpCircleFilledIcon />
-                            </n-icon>
-                          </template>
-                          <template #default>
-                            <n-gradient-text :type="'warning'">
-                            <div style="max-width: 400px;text-align: left">
-                              启用深度思考模式：<br>
-                              适用于 DeepSeek-Reasoner、MiMo-V2.5-Pro 等支持推理的模型。<br>
-                              如使用普通模型请关闭此选项
-                            </div>
-                            </n-gradient-text>
-                          </template>
-                        </n-tooltip>
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="12" label="http代理" :path="`openAI.aiConfigs[${index}].httpProxyEnabled`">
-                        <n-switch v-model:value="aiConfig.httpProxyEnabled"/>
-                      </n-form-item-gi>
-                      <n-form-item-gi :span="12" v-if="aiConfig.httpProxyEnabled" title="http代理地址" :path="`openAI.aiConfigs[${index}].httpProxy`">
-                        <n-input type="text" placeholder="http代理地址" v-model:value="aiConfig.httpProxy" clearable/>
-                      </n-form-item-gi>
-                    </n-grid>
-                  </n-collapse-item>
-                </n-collapse>
-                <n-button type="primary" dashed @click="addAiConfig" style="width: 100%;">+ 添加AI配置</n-button>
-              </n-space>
+              <n-alert type="info" :bordered="false">
+                <n-space align="center">
+                  <n-text>AI 模型服务配置已迁移到独立页面（共 {{ formValue.openAI.aiConfigs?.length || 0 }} 个配置）</n-text>
+                  <n-button type="primary" size="small" tag="a" @click="goAiConfigs">前往管理</n-button>
+                </n-space>
+              </n-alert>
             </n-gi>
 
             <n-gi :span="24">
@@ -818,5 +914,51 @@ function deletePrompt(ID) {
   font-size: 16px;
   font-weight: bold;
   color: red;
+}
+
+/* 赞助码醒目样式 */
+.sponsor-code-item :deep(.n-form-item-blank) {
+  display: block;
+  width: 100%;
+}
+
+.sponsor-code-box {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(240, 160, 32, 0.10), rgba(240, 160, 32, 0.03));
+  border: 1.5px dashed rgba(240, 160, 32, 0.55);
+  box-shadow: 0 2px 10px rgba(240, 160, 32, 0.12);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.sponsor-code-box:hover,
+.sponsor-code-box:focus-within {
+  border-color: #f0a020;
+  border-style: solid;
+  box-shadow: 0 2px 14px rgba(240, 160, 32, 0.35);
+}
+
+.sponsor-code-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sponsor-code-label-text {
+  font-size: 16px;
+  font-weight: bold;
+  color: #f0a020;
+}
+
+.sponsor-code-label-sub {
+  font-size: 12px;
+  color: rgba(240, 160, 32, 0.75);
+}
+
+.sponsor-code-input :deep(.n-input__input-el) {
+  font-weight: 600;
+  letter-spacing: 1px;
 }
 </style>

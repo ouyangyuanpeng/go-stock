@@ -1,6 +1,8 @@
 package data
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"go-stock/backend/db"
@@ -1158,17 +1160,25 @@ func (m MarketNewsApi) InvestCalendar(yearMonth string) []any {
 		yearMonth = time.Now().Format("2006-01")
 	}
 
+	// 韭研公社网站 JS 逆向：token = md5("Uu0KfOB8iUP69d3c:" + timestamp)
+	// 无需 SESSION cookie，匿名访问即可
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	signSrc := "Uu0KfOB8iUP69d3c:" + timestamp
+	md5Sum := md5.Sum([]byte(signSrc))
+	token := hex.EncodeToString(md5Sum[:])
+
 	url := "https://app.jiuyangongshe.com/jystock-app/api/v1/timeline/list"
 	resp, err := SharedHTTPClient.SetTimeout(time.Duration(30)*time.Second).R().
 		SetHeader("Host", "app.jiuyangongshe.com").
 		SetHeader("Origin", "https://www.jiuyangongshe.com").
-		SetHeader("Referer", "https://www.jiuyangongshe.com/").
+		SetHeader("Referer", "https://www.jiuyangongshe.com/timeline").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
 		SetHeader("Content-Type", "application/json").
-		SetHeader("token", "1cc6380a05c652b922b3d85124c85473").
 		SetHeader("platform", "3").
-		SetHeader("Cookie", "SESSION=NDZkNDU2ODYtODEwYi00ZGZkLWEyY2ItNjgxYzY4ZWMzZDEy").
-		SetHeader("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10)).
+		SetHeader("Accept-Language", "en-US, zh; q=0.9, en; q=0.8").
+		SetHeader("X-Requested-With", "XMLHttpRequest").
+		SetHeader("timestamp", timestamp).
+		SetHeader("token", token).
 		SetBody(map[string]string{
 			"date":  yearMonth,
 			"grade": "0",
@@ -1178,10 +1188,18 @@ func (m MarketNewsApi) InvestCalendar(yearMonth string) []any {
 		logger.SugaredLogger.Errorf("InvestCalendar err:%s", err.Error())
 		return []any{}
 	}
-	//logger.SugaredLogger.Infof("InvestCalendar:%s", resp.Body())
 	respMap := map[string]any{}
 	err = json.Unmarshal(resp.Body(), &respMap)
-	return respMap["data"].([]any)
+	if err != nil {
+		logger.SugaredLogger.Errorf("InvestCalendar unmarshal err:%s,body:%s", err.Error(), resp.Body())
+		return []any{}
+	}
+	// errCode != 0 时 data 为空对象 {}，需类型断言保护避免 panic
+	if data, ok := respMap["data"].([]any); ok {
+		return data
+	}
+	logger.SugaredLogger.Errorf("InvestCalendar unexpected response:%s", resp.Body())
+	return []any{}
 
 }
 
@@ -1200,6 +1218,35 @@ func (m MarketNewsApi) ClsCalendar() []any {
 	respMap := map[string]any{}
 	err = json.Unmarshal(resp.Body(), &respMap)
 	return respMap["data"].([]any)
+}
+
+// ConceptEventList 获取同花顺每日炒作题材事件列表
+// date 格式: 2006-01-02，为空时默认当天，接口会返回该日及之前若干天的数据
+func (m MarketNewsApi) ConceptEventList(date string) *[]models.ConceptEventDay {
+	url := "https://news.10jqka.com.cn/app/concept_v2_api/open/api/concept/event/jtcsm/v1/event/list"
+	if date != "" {
+		url += "?date=" + date
+	}
+	resp, err := SharedHTTPClient.SetTimeout(time.Duration(30)*time.Second).R().
+		SetHeader("Host", "news.10jqka.com.cn").
+		SetHeader("Origin", "https://news.10jqka.com.cn").
+		SetHeader("Referer", "https://news.10jqka.com.cn/").
+		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
+		Get(url)
+	if err != nil {
+		logger.SugaredLogger.Errorf("ConceptEventList err:%s", err.Error())
+		return &[]models.ConceptEventDay{}
+	}
+	respMap := struct {
+		StatusCode int    `json:"status_code"`
+		StatusMsg  string `json:"status_msg"`
+		Data       []models.ConceptEventDay
+	}{}
+	if err := json.Unmarshal(resp.Body(), &respMap); err != nil {
+		logger.SugaredLogger.Errorf("ConceptEventList unmarshal err:%s,body:%s", err.Error(), resp.Body())
+		return &[]models.ConceptEventDay{}
+	}
+	return &respMap.Data
 }
 
 func (m MarketNewsApi) GetGDP() *models.GDPResp {
@@ -1564,4 +1611,142 @@ func (m MarketNewsApi) GetUplimitHot(date string, limit int) map[string]any {
 		return map[string]any{"code": 50000, "message": "数据解析失败"}
 	}
 	return result
+}
+
+// GetUplimitHotSmart 带回退的涨停梯队查询（AI 工具用）：
+// date 为空时从今天起逐日向前回退（最多 6 天），返回最近一个有数据的交易日结果，
+// 避免周末/节假日查询当天拿到空数据；返回值二参为实际数据日期，供 AI 工具标注。
+func (m MarketNewsApi) GetUplimitHotSmart(date string, limit int) (map[string]any, string) {
+	if date == "" {
+		loc, _ := time.LoadLocation("Asia/Shanghai")
+		now := time.Now().In(loc)
+		var last map[string]any
+		for i := 0; i <= 6; i++ {
+			try := now.AddDate(0, 0, -i).Format("2006-01-02")
+			res := m.GetUplimitHot(try, limit)
+			if code, _ := res["code"].(float64); int(code) != 20000 {
+				last = res
+				continue
+			}
+			dataMap, _ := res["data"].(map[string]any)
+			stocks, _ := dataMap["stocks"].(string)
+			if strings.TrimSpace(stocks) != "" {
+				return res, try
+			}
+			last = res
+		}
+		return last, now.Format("2006-01-02")
+	}
+	return m.GetUplimitHot(date, limit), date
+}
+
+// RzrqRank 获取同花顺融资融券排名数据
+// rzrqType: hyList(行业) / gnList(概念) / ggList(个股)
+// sortKey: jmr(净买入额) 等
+// sortType: desc/asc
+// length: 返回条数
+func (m MarketNewsApi) RzrqRank(rzrqType, sortKey, sortType, date string, length, offset int) *models.RzrqRankData {
+	res := &models.RzrqRankData{Type: rzrqType}
+	if rzrqType == "" {
+		return res
+	}
+	if sortKey == "" {
+		sortKey = "jmr"
+	}
+	if sortType == "" {
+		sortType = "desc"
+	}
+	if length <= 0 {
+		length = 5
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	apiUrl := fmt.Sprintf("https://eq.10jqka.com.cn/rzrqEnhance/index.php?op=getRankData&type=%s&sortKey=%s&sortType=%s&length=%d&offset=%d", rzrqType, sortKey, sortType, length, offset)
+	if date != "" {
+		apiUrl += "&date=" + date
+	}
+	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+		SetHeader("Host", "eq.10jqka.com.cn").
+		SetHeader("Referer", "https://eq.10jqka.com.cn/").
+		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
+		Get(apiUrl)
+	if err != nil {
+		logger.SugaredLogger.Errorf("RzrqRank err:%s", err.Error())
+		return res
+	}
+	respMap := struct {
+		ErrorCode int                   `json:"errorCode"`
+		Data      []models.RzrqRankItem `json:"data"`
+		ErrorMsg  string                `json:"errorMsg"`
+	}{}
+	if err := json.Unmarshal(resp.Body(), &respMap); err != nil {
+		logger.SugaredLogger.Errorf("RzrqRank unmarshal err:%s,body:%s", err.Error(), resp.Body())
+		return res
+	}
+	res.List = respMap.Data
+	return res
+}
+
+// RzrqTrend 获取融资融券走势数据
+// rzrqType: hyList(行业) / gnList(概念) / ggList(个股)
+// code: 板块代码或股票代码，空字符串表示全市场汇总
+func (m MarketNewsApi) RzrqTrend(rzrqType, code string) *models.RzrqTrendData {
+	res := &models.RzrqTrendData{Type: rzrqType, Code: code}
+	apiUrl := "https://eq.10jqka.com.cn/rzrqEnhance/index.php?op=newIndexData"
+	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+		SetHeader("Host", "eq.10jqka.com.cn").
+		SetHeader("Referer", "https://eq.10jqka.com.cn/").
+		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
+		Get(apiUrl)
+	if err != nil {
+		logger.SugaredLogger.Errorf("RzrqTrend err:%s", err.Error())
+		return res
+	}
+	respMap := struct {
+		ErrorCode int    `json:"errorCode"`
+		ErrorMsg  string `json:"errorMsg"`
+		Data      struct {
+			Chart struct {
+				RzyeUnit  string   `json:"rzyeUnit"`
+				SpjUnit   string   `json:"spjUnit"`
+				RzjlrUnit string   `json:"rzjlrUnit"`
+				SpzfUnit  string   `json:"spzfUnit"`
+				Date      []string `json:"date"`
+				Rzye      []string `json:"rzye"`
+				Rzjlr     []string `json:"rzjlr"`
+				Spj       []string `json:"spj"`
+				Spzf      []string `json:"spzf"`
+			} `json:"chart"`
+			UpdateTime string `json:"updateTime"`
+		} `json:"data"`
+	}{}
+	if err := json.Unmarshal(resp.Body(), &respMap); err != nil {
+		logger.SugaredLogger.Errorf("RzrqTrend unmarshal err:%s,body:%s", err.Error(), resp.Body())
+		return res
+	}
+	c := respMap.Data.Chart
+	res.RzyeUnit = c.RzyeUnit
+	res.RzjlrUnit = c.RzjlrUnit
+	res.SpjUnit = c.SpjUnit
+	res.SpzfUnit = c.SpzfUnit
+	res.UpdateTime = respMap.Data.UpdateTime
+	n := len(c.Date)
+	for i := 0; i < n; i++ {
+		item := models.RzrqTrendItem{Date: c.Date[i]}
+		if i < len(c.Rzye) {
+			item.Rzye = c.Rzye[i]
+		}
+		if i < len(c.Rzjlr) {
+			item.Rzjlr = c.Rzjlr[i]
+		}
+		if i < len(c.Spj) {
+			item.Spj = c.Spj[i]
+		}
+		if i < len(c.Spzf) {
+			item.Spzf = c.Spzf[i]
+		}
+		res.Items = append(res.Items, item)
+	}
+	return res
 }

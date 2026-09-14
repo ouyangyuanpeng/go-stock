@@ -11,6 +11,7 @@ import {
   IsTradingTime,
   IsHKTradingTime,
   IsUSTradingTime,
+  OpenURL,
   ReFleshTelegraphList,
   SaveAIResponseResult,
   SaveAsMarkdown,
@@ -20,6 +21,7 @@ import {
 } from "../../wailsjs/go/main/App";
 import {EventsOff, EventsOn} from "../../wailsjs/runtime";
 import NewsList from "./newsList.vue";
+import PolicyNewsList from "./PolicyNewsList.vue";
 import KLineChart from "./KLineChart.vue";
 import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
 import { CaretDown, CaretUp, PulseOutline,} from "@vicons/ionicons5";
@@ -31,15 +33,19 @@ import IndustryMoneyRank from "./industryMoneyRank.vue";
 import StockResearchReportList from "./StockResearchReportList.vue";
 import StockNoticeList from "./StockNoticeList.vue";
 import LongTigerRankList from "./LongTigerRankList.vue";
+import LhbHotMoneyDaily from "./LhbHotMoneyDaily.vue";
 import IndustryResearchReportList from "./IndustryResearchReportList.vue";
 import HotStockList from "./HotStockList.vue";
 import HotEvents from "./HotEvents.vue";
 import HotTopics from "./HotTopics.vue";
+import ConceptEventList from "./ConceptEventList.vue";
 import InvestCalendarTimeLine from "./InvestCalendarTimeLine.vue";
 import ClsCalendarTimeLine from "./ClsCalendarTimeLine.vue";
 import Stockhotmap from "./stockhotmap.vue";
 import BKFundFlowChart from "./bkFundFlowChart.vue";
 import ConceptFundFlowChart from "./conceptFundFlowChart.vue";
+import RzrqRank from "./RzrqRank.vue";
+import FuturesPositionChart from "./FuturesPositionChart.vue";
 
 const route = useRoute()
 const icon = ref('https://raw.githubusercontent.com/ArvinLovegood/go-stock/master/build/appicon.png');
@@ -64,6 +70,40 @@ const httpProxyEnabled = ref(false)
 const theme = computed(() => {
   return darkTheme ? 'dark' : 'light'
 })
+// Polymarket 预测市场列表
+const polymarketMarkets = ref([
+  {
+    marketSlug: 'will-the-fed-increase-interest-rates-by-25-bps-after-the-september-2026-meeting-649',
+    eventUrl: 'https://polymarket.com/event/fed-decision-in-september-762',
+    title: '美联储将在2026年9月会议后加息25个基点吗？',
+    yesPct: '60%',
+    noPct: '41%'
+  },
+  {
+    marketSlug: 'will-nvidia-be-the-largest-company-in-the-world-by-market-cap-on-december-31-244',
+    eventUrl: 'https://polymarket.com/event/largest-company-end-of-december-2026',
+    title: '问题：截至12月31日，NVIDIA 是否会成为全球市值最大的公司？',
+    yesPct: '56%',
+    noPct: '45%'
+  }
+])
+function polymarketSrc(m) {
+  return `https://embed.polymarket.com/market?market=${m.marketSlug}&theme=${darkTheme.value ? 'dark' : 'light'}&liveactivity=true&height=300`
+}
+function polymarketLdJson(m) {
+  return JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'WebPage',
+    'name': m.title,
+    'description': `Prediction market: 是 ${m.yesPct} · 否 ${m.noPct} on Polymarket.`,
+    'url': m.eventUrl,
+    'publisher': {
+      '@type': 'Organization',
+      'name': 'Polymarket',
+      'url': 'https://polymarket.com'
+    }
+  })
+}
 const aiSummary = ref(``)
 const aiSummaryTime = ref("")
 const modelName = ref("")
@@ -264,7 +304,7 @@ function reAiSummary() {
   summaryModal.value = true
   loading.value = true
   analysisStatus.value = "正在连接AI服务..."
-  SummaryStockNews(question.value,aiConfigId.value, sysPromptId.value,enableTools.value,thinkingMode.value,"summaryStockNews","")
+  SummaryStockNews(question.value,aiConfigId.value, sysPromptId.value,enableTools.value,thinkingMode.value,"summaryStockNews","","","")
 }
 
 function getAiSummary() {
@@ -418,7 +458,7 @@ function ReFlesh(source) {
       <n-tab-pane name="市场快讯" tab="市场快讯">
         <n-grid :cols="1" :y-gap="0">
           <n-gi>
-            <AnalyzeMartket :dark-theme="darkTheme" :chart-height="300" :kDays="1" :name="'最近24小时热词'" />
+            <AnalyzeMartket :dark-theme="darkTheme" :chart-height="300" />
           </n-gi>
           <n-gi>
             <n-grid :cols="foreignNewsList.length?3:2" :y-gap="0">
@@ -436,6 +476,9 @@ function ReFlesh(source) {
           </n-gi>
         </n-grid>
 
+      </n-tab-pane>
+      <n-tab-pane name="政策新闻" tab="政策新闻">
+        <PolicyNewsList/>
       </n-tab-pane>
       <n-tab-pane name="全球股指" tab="全球股指">
         <n-tabs type="segment" animated>
@@ -583,6 +626,9 @@ function ReFlesh(source) {
           </n-tab-pane>
         </n-tabs>
       </n-tab-pane>
+      <n-tab-pane name="期指多空" tab="期指多空">
+        <FuturesPositionChart variety="IF" :days="120" :chart-height="panelHeight-60" :dark-theme="true"/>
+      </n-tab-pane>
       <n-tab-pane name="行业排名" tab="行业排名">
         <n-tabs type="card" animated>
           <n-tab-pane name="行业涨幅排名" tab="行业涨幅排名">
@@ -724,6 +770,9 @@ function ReFlesh(source) {
       <n-tab-pane name="龙虎榜" tab="龙虎榜">
         <LongTigerRankList />
       </n-tab-pane>
+      <n-tab-pane name="游资动向" tab="游资动向">
+        <LhbHotMoneyDaily />
+      </n-tab-pane>
       <n-tab-pane name="个股研报" tab="个股研报">
         <StockResearchReportList :stock-code="stockCode"/>
       </n-tab-pane>
@@ -763,10 +812,63 @@ function ReFlesh(source) {
           <n-tab-pane name="财经日历" tab="财经日历">
             <ClsCalendarTimeLine />
           </n-tab-pane>
+          <n-tab-pane name="每日炒作题材" tab="每日炒作题材">
+            <ConceptEventList />
+          </n-tab-pane>
+          <n-tab-pane name="PolyMarket预测" tab="PolyMarket预测">
+            <n-grid :cols="2" :x-gap="12" :y-gap="12" responsive="screen" style="--wails-draggable:no-drag">
+              <n-grid-item v-for="m in polymarketMarkets" :key="m.marketSlug">
+                <n-card :title="m.title" size="small" style="height:100%">
+                  <component :is="'script'" type="application/ld+json" v-html="polymarketLdJson(m)"></component>
+                  <div style="display:flex;justify-content:center">
+                    <figure
+                      class="polymarket-embed"
+                      :aria-label="`Polymarket prediction market: ${m.title}`"
+                      style="position:relative;display:inline-block;margin:0"
+                    >
+                      <iframe
+                        :title="`${m.title} — Polymarket Prediction Market`"
+                        :src="polymarketSrc(m)"
+                        width="400"
+                        height="300"
+                        frameborder="0"
+                        allowtransparency="true"
+                      ></iframe>
+                      <a
+                        :href="m.eventUrl"
+                        aria-label="View on Polymarket"
+                        target="_blank"
+                        rel="noopener"
+                        style="position:absolute;top:16px;right:20px;width:120px;height:24px;z-index:10"
+                      ></a>
+                      <figcaption style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">
+                        <strong>{{ m.title }}</strong><br>
+                        是 {{ m.yesPct }} · 否 {{ m.noPct }}<br>
+                        <a :href="m.eventUrl">
+                          View full market &amp; trade on Polymarket
+                        </a>
+                      </figcaption>
+                    </figure>
+                  </div>
+                </n-card>
+              </n-grid-item>
+            </n-grid>
+            <n-card title="Polymarket 财经市场" size="small" style="margin-top:12px;--wails-draggable:no-drag">
+              <n-flex justify="center" align="center" :wrap="false" style="gap:12px">
+                <n-text depth="2">polymarket.com 拒绝 iframe 嵌入，点击下方按钮在外部浏览器打开</n-text>
+                <n-button type="info" size="small" @click="OpenURL('https://polymarket.com/zh/finance')">
+                  打开 Polymarket 财经市场
+                </n-button>
+              </n-flex>
+            </n-card>
+          </n-tab-pane>
         </n-tabs>
       </n-tab-pane>
       <n-tab-pane name="名站优选" tab="名站优选">
         <Stockhotmap />
+      </n-tab-pane>
+      <n-tab-pane name="融资融券" tab="融资融券">
+        <RzrqRank :dark-theme="darkTheme"/>
       </n-tab-pane>
     </n-tabs>
   </n-card>

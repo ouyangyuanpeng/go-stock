@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"go-stock/backend/apppath"
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
@@ -113,8 +114,9 @@ var defaultKeyDepartments = []string{
 	"国家能源局",
 }
 
-// keyDepartmentsFile 重点部门外置文件（用户自定义，可编辑）
-const keyDepartmentsFile = "data/key_departments.json"
+// keyDepartmentsFile 重点部门外置文件（用户自定义，可编辑），落在统一数据目录下，
+// 不依赖进程工作目录。
+var keyDepartmentsFile = apppath.File("key_departments.json")
 
 // keyDepartmentFile 外置文件结构
 type keyDepartmentFile struct {
@@ -426,6 +428,26 @@ func (p PolicyNewsApi) GetStoredPolicyNews(department, keyword string, page, pag
 		})
 	}
 	return &items
+}
+
+// CleanOldPolicyNews 清理指定天数之前入库的政策新闻，返回删除行数。
+// 该表每 5 分钟抓一轮、按 URL 唯一索引去重，只增不减；页面只按日期倒序翻前若干页，
+// 历史数据会持续占用磁盘。date 为 yyyy-MM-dd 字符串可直接比较，
+// 少数解析不出日期的记录用创建时间兜底判断。
+// 使用 Unscoped 做物理删除，否则 GORM 只写 deleted_at 标记，表仍然膨胀。
+func (p PolicyNewsApi) CleanOldPolicyNews(days int) int64 {
+	if days <= 0 || db.Dao == nil {
+		return 0
+	}
+	cutoff := time.Now().AddDate(0, 0, -days)
+	res := db.Dao.Unscoped().
+		Where("(date != '' AND date < ?) OR (date = '' AND created_at < ?)", cutoff.Format("2006-01-02"), cutoff).
+		Delete(&models.PolicyNews{})
+	if res.Error != nil {
+		logger.SugaredLogger.Warnf("政策新闻清理失败:%v", res.Error)
+		return 0
+	}
+	return res.RowsAffected
 }
 
 // crawlDepartment 抓取单个部门：curated 覆盖页 -> 官网首页通用解析 -> 栏目页二次发现（最多 5 个）

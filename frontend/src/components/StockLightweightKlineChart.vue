@@ -9,7 +9,7 @@ import {
   LineStyle,
   MismatchDirection,
 } from 'lightweight-charts'
-import { NButton, NDropdown, NFlex, NInput, NModal, NSpin, NText, NTooltip, useMessage } from 'naive-ui'
+import { NButton, NDropdown, NFlex, NInput, NModal, NText, NTooltip, useMessage } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   smaValues, emaFinite, emaLeadingNull, weightedMaValues, bollingerBands, obvValues,
@@ -22,15 +22,22 @@ import {
   vwapBandsValues, massIndexValues, ulcerIndexValues, coppockValues, temaValues, smiValues, smcValues,
   trixSlopeValues, temaSlopeValues, temaSlopeBundle,
   tdSequentialValues, bbiValues, limitPriceLines, weisWaveValues, divergenceValues, limitBandEvidence,
+  buySellPointsValues, temaTurnPointsValues,
 } from './kline/calc'
 import { makeToggle } from './kline/indicators/toggle'
 import { parseNumStr, formatPrice2, formatVolumeCn, formatAmountCn, formatPctField, formatSigned2 } from './kline/format'
 import { createMeasurePrimitive } from './kline/measurePrimitive'
 import { createWavePrimitive } from './kline/wavePrimitive'
-import { createVolumeProfilePrimitive } from './kline/volumeProfilePrimitive'
+import { createVolumeProfilePrimitive, POC_COLOR } from './kline/volumeProfilePrimitive'
 import { createTDSequentialPrimitive } from './kline/tdSequentialPrimitive'
 import { createDivergencePrimitive } from './kline/divergencePrimitive'
+import { createBuySellPrimitive } from './kline/buySellPrimitive'
+import { createTemaTurnPrimitive } from './kline/temaTurnPrimitive'
 import { createDrawingHost, DRAWING_TOOLS } from './kline/drawingManagerHost'
+import { extractOHLCV } from './kline/bars'
+import {
+  alertAudioState, primeAlertAudio, playBuySellAlertTone, playTemaConfirmAlertTone, claimAlertToneOnce,
+} from './kline/alertSound'
 import {
   eastMoneyDayToUnixSeconds, eastMoneyKlineFieldToUnixSeconds, chartTimeToUtcMs,
   formatTickTime, sortKey, toChartTime, mergeKlineRows, mergeRefreshWithLatest,
@@ -41,7 +48,7 @@ import {
   CLR_RISE, CLR_FALL, DAILY_LIKE_KLT, CN_TZ,
   HISTORY_PAGE_SIZE, BARS_BEFORE_LOAD_MORE, DEFAULT_VISIBLE_BARS,
   DEFAULT_RIGHT_LOGICAL_GAP, SHOW_CHIP_TOOLBAR_BUTTON, INTERVALS,
-  ADJUST_OPTIONS, DEFAULT_ADJUST,
+  ADJUST_OPTIONS, DEFAULT_ADJUST, BUY_SELL_SCORE_OPTIONS,
 } from './kline/constants'
 
 const props = defineProps({
@@ -101,10 +108,17 @@ const isGlobalIndexCode = computed(() => {
   // 海外指数代码为字母（DJIA/SPX/NDX/HSI），排除纯数字后缀
   return !/[0-9]/.test(suffix)
 })
-// 复权类型：qfq=前复权(默认)、hfq=后复权、none=不复权；仅日K及更长周期有效；场内 ETF/港股/中证指数/海外指数默认 none
-const activeAdjust = ref((isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) ? 'none' : DEFAULT_ADJUST)
-// 实际传给后端的复权标识：分时周期传空串（走各数据源默认行为），日K类周期传 activeAdjust
+// 币安 USDT-M 永续合约识别：bn: 前缀（如 bn:BTCUSDT，后端统一小写 bn:btcusdt）；
+// 属加密合约独立行情体系，无 A 股复权/涨跌停概念
+const isBinanceCode = computed(() => String(props.code || '').toUpperCase().startsWith('BN:'))
+// Bitget 美股永续合约识别：bt: 前缀（如 bt:AAPLUSDT，后端统一小写 bt:aaplusdt）；
+// 同属合约独立行情体系，无 A 股复权/涨跌停概念
+const isBitgetCode = computed(() => String(props.code || '').toUpperCase().startsWith('BT:'))
+// 复权类型：qfq=前复权(默认)、hfq=后复权、none=不复权；仅日K及更长周期有效；场内 ETF/港股/中证指数/海外指数/币安合约/美股永续默认 none
+const activeAdjust = ref((isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value || isBinanceCode.value || isBitgetCode.value) ? 'none' : DEFAULT_ADJUST)
+// 实际传给后端的复权标识：分时周期传空串（走各数据源默认行为），日K类周期传 activeAdjust；币安合约/美股永续恒为 none
 const adjustFlagForRequest = computed(() => {
+  if (isBinanceCode.value || isBitgetCode.value) return 'none'
   return DAILY_LIKE_KLT.has(activeKlt.value) ? activeAdjust.value : ''
 })
 
@@ -315,6 +329,19 @@ const showDivergence = ref(false)
 const divergenceSource = ref('rsi')
 /** Weis Wave 威斯波浪（副图 histogram） */
 const showWeisWave = ref(false)
+/** 「买卖点预测」主图箭头标注（多指标共振） */
+const showBuySell = ref(false)
+/** 出现新的买卖点时播放提示音（默认开；仅「买卖点」开启时生效） */
+const buySellAlertSound = ref(true)
+/** 买卖点共振阈值：3=灵敏 4=标准 5=严格（等权计数制：命中的信号路数需 >= 该值，满分 9） */
+const buySellMinScore = ref(4)
+const buySellScoreLabel = computed(
+  () => BUY_SELL_SCORE_OPTIONS.find(o => o.value === buySellMinScore.value)?.label || '标准',
+)
+/** 「TEMA 斜率转折」独立买卖点标注（预警/确认双阶段，与 9 路共振体系互不影响） */
+const showTemaTurn = ref(false)
+/** 出现新的「T确」（TEMA 温和确认）时播放提示音（默认开；仅 TEMA 转折 开启时生效） */
+const temaTurnAlertSound = ref(true)
 
 // ===== 技术指标设置持久化（保存上次选择，避免每次进入重新选） =====
 const PERSIST_KEY = 'kline-indicator-settings'
@@ -328,7 +355,7 @@ const PERSISTED_INDICATOR_REFS = [
   showCHOP, showElderRay, showChaikinOsc, showVWAPBands, showMassIndex,
   showUlcerIndex, showCoppock, showTEMA, showTEMASlope, showSMI, showSignalRatio, showSMC,
   showChip, showVolumeProfile, showTDSequential, showBBI, showLimitLines,
-  showDivergence, showWeisWave,
+  showDivergence, showWeisWave, showBuySell, showTemaTurn, buySellAlertSound, temaTurnAlertSound,
 ]
 const PERSISTED_INDICATOR_KEYS = [
   'showMA', 'showBOLL', 'showOBV', 'showMACD', 'showKDJ', 'showRSI', 'showATR', 'showVWAP',
@@ -340,7 +367,7 @@ const PERSISTED_INDICATOR_KEYS = [
   'showCHOP', 'showElderRay', 'showChaikinOsc', 'showVWAPBands', 'showMassIndex',
   'showUlcerIndex', 'showCoppock', 'showTEMA', 'showTEMASlope', 'showSMI', 'showSignalRatio', 'showSMC',
   'showChip', 'showVolumeProfile', 'showTDSequential', 'showBBI', 'showLimitLines',
-  'showDivergence', 'showWeisWave',
+  'showDivergence', 'showWeisWave', 'showBuySell', 'showTemaTurn', 'buySellAlertSound', 'temaTurnAlertSound',
 ]
 const PERSISTED_KLT_SET = new Set(INTERVALS.map(it => it.klt))
 
@@ -360,6 +387,13 @@ function loadIndicatorSettings() {
     if (typeof data.divergenceSource === 'string' && ['rsi', 'macd', 'kdj'].includes(data.divergenceSource)) {
       divergenceSource.value = data.divergenceSource
     }
+    // 买卖点共振阈值（等权制 3/4/5）；旧加权制 2/3/4 一次性 +1 迁移（2→3 灵敏、3→4 标准、4→5 严格）
+    if (BUY_SELL_SCORE_OPTIONS.some(o => o.value === data.buySellMinScore)) {
+      buySellMinScore.value = data.buySellMinScore
+    } else if (data.buySellEqw !== true && [2, 3, 4].includes(data.buySellMinScore)) {
+      const migrated = data.buySellMinScore + 1
+      if (BUY_SELL_SCORE_OPTIONS.some(o => o.value === migrated)) buySellMinScore.value = migrated
+    }
   } catch {}
 }
 
@@ -369,7 +403,7 @@ function persistIndicatorSettings() {
   persistTimer = setTimeout(() => {
     persistTimer = null
     try {
-      const data = { activeKlt: activeKlt.value, divergenceSource: divergenceSource.value }
+      const data = { activeKlt: activeKlt.value, divergenceSource: divergenceSource.value, buySellMinScore: buySellMinScore.value, buySellEqw: true }
       PERSISTED_INDICATOR_KEYS.forEach((key, i) => {
         data[key] = PERSISTED_INDICATOR_REFS[i].value
       })
@@ -383,7 +417,7 @@ loadIndicatorSettings()
 
 // 任一指标开关或周期变化时防抖保存
 watch(
-  [...PERSISTED_INDICATOR_REFS, activeKlt, divergenceSource],
+  [...PERSISTED_INDICATOR_REFS, activeKlt, divergenceSource, buySellMinScore],
   () => persistIndicatorSettings(),
 )
 
@@ -415,6 +449,9 @@ let wavePrimitive = null
 let volumeProfilePrimitive = null
 /** VPVR 用的 OHLCV 缓存（按 mergedRawRowsVersion 失效，避免每帧重排序） */
 const volumeProfileBarsCache = { version: -1, data: null }
+/** POC 数值标签（挂在价格刻度上；横向虚线仍由 primitive 画，这里只取轴上的 tag） */
+let pocPriceLineHandle = null
+let pocTagRaf = 0
 /** 「神奇九转」primitive 实例（数字标记叠加层） */
 let tdSequentialPrimitive = null
 /** 九转计数缓存（按 mergedRawRowsVersion 失效） */
@@ -431,6 +468,28 @@ let divergencePrimitive = null
 const divergenceCache = { version: -1, source: '', data: null }
 /** 背离用的 OHLCV 缓存（含指标源所需字段） */
 const divergenceBarsCache = { version: -1, data: null }
+/** 「买卖点预测」primitive 实例（主图箭头标注） */
+let buySellPrimitive = null
+/** 买卖点检测结果缓存（按 mergedRawRowsVersion + 档位 + 周期失效） */
+const buySellCache = { version: -1, score: -1, klt: '', data: null }
+/** 买卖点用的 OHLCV 缓存 */
+const buySellBarsCache = { version: -1, data: null }
+/**
+ * 买卖点提示音基线：记录已提示过的最新信号所在 K 线的时间（不是数组下标——向左加载更多
+ * 历史会把所有下标整体推后，用下标比较会误判为「新信号」而误报），只在出现时间更晚的
+ * 信号时响铃，避免每次轮询刷新/重绘都重复播报历史箭头。
+ * ctx 记录 (股票|周期|档位) 上下文，上下文变化时只重置基线不响铃（换股/切周期不算新信号）。
+ */
+const buySellAlertState = { ready: false, ctx: '', buy: null, sell: null }
+/** 「TEMA 斜率转折」primitive 实例（主图预警/确认标记，独立于买卖点体系） */
+let temaTurnPrimitive = null
+/** TEMA 转折点检测结果缓存（按 mergedRawRowsVersion + 周期失效） */
+const temaTurnCache = { version: -1, klt: '', data: null }
+/**
+ * 「T确」提示音基线：与买卖点提示音同理，以 K 线时间（非数组下标）记录最新确认点，
+ * 只在出现时间更晚的确认信号时响铃，避免轮询刷新/加载更早历史导致重复或误报。
+ */
+const temaTurnAlertState = { ready: false, ctx: '', buy: null, sell: null }
 /** 波浪 ESC 键监听句柄 */
 let waveKeydownHandler = null
 // 波浪点拖拽状态（复用 longDragWindowListeners 范式）
@@ -468,10 +527,34 @@ const loadingHistory = ref(false)
 const errorText = ref('')
 const activeDataSource = ref('')
 
+// 左侧指标栏收起状态（记忆上次选择，避免每次进来重新收）
+const SIDEBAR_COLLAPSED_KEY = 'kline-sidebar-collapsed'
+const sidebarCollapsed = ref(false)
+
+/** 收起/展开左侧指标栏，把宽度让给 K 线 */
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed.value ? '1' : '0')
+  } catch {}
+}
+
+/** 通达信MAC 数据源（本地行情服务器）的实时轮询间隔：比默认 60 秒更密，用于短线盯盘 */
+const MAC_POLL_INTERVAL_MS = 10000
+/** 永续合约（币安 bn: / Bitget bt:）K 线轮询间隔：7×24 交易、波动快，固定 5 秒 */
+const CONTRACT_POLL_INTERVAL_MS = 5000
+/** 实际生效的轮询间隔：合约 5 秒，MAC 数据源 10 秒，其余沿用父组件传入值 */
+const pollIntervalMs = computed(() => {
+  if (isBinanceCode.value || isBitgetCode.value) return CONTRACT_POLL_INTERVAL_MS
+  return activeDataSource.value === 'tdx-mac' ? MAC_POLL_INTERVAL_MS : props.realtimeIntervalMs
+})
+
 let chart = null
 let candleSeries = null
 let volSeries = null
 let pollTimer = null
+/** 轮询请求在途标记，避免高频轮询叠加请求 */
+let pollInFlight = false
 /** 已合并的后端原始 K 线（按时间升序） */
 let mergedRawRows = []
 /** 每次 mergedRawRows 变更后递增，供 computed 感知变化 */
@@ -625,36 +708,6 @@ function removeSeriesSafe(api) {
 }
 
 
-
-function extractOHLCV(rows) {
-  const sorted = [...(rows || [])].sort((a, b) => sortKey(a.day) - sortKey(b.day))
-  const times = []
-  const opens = []
-  const closes = []
-  const highs = []
-  const lows = []
-  const vols = []
-  const amplitudes = []
-  for (const r of sorted) {
-    const t = toChartTime(r.day)
-    if (t === null) continue
-    const o = Number(r.open)
-    const h = Number(r.high)
-    const l = Number(r.low)
-    const c = Number(r.close)
-    const v = Number(r.volume)
-    if (![o, h, l, c].every(Number.isFinite)) continue
-    times.push(t)
-    opens.push(o)
-    closes.push(c)
-    highs.push(h)
-    lows.push(l)
-    vols.push(Number.isFinite(v) ? v : 0)
-    const rawAmp = parseNumStr(r.amplitude)
-    amplitudes.push(Number.isFinite(rawAmp) ? rawAmp : (o > 0 ? (h - l) / o * 100 : NaN))
-  }
-  return { times, opens, closes, highs, lows, vols, amplitudes }
-}
 
 function avgAmplitude(amplitudes, period) {
   if (!amplitudes || amplitudes.length < period) return NaN
@@ -1759,6 +1812,10 @@ function syncIndicators() {
   syncTDSequentialPrimitive()
   // 自动背离为 primitive（主图连线+徽章），单独同步
   syncDivergencePrimitive()
+  // 买卖点预测为 primitive（主图箭头标注），单独同步
+  syncBuySellPrimitive()
+  // TEMA 斜率转折为 primitive（主图预警/确认标记），单独同步
+  syncTemaTurnPrimitive()
   // BBI 主图叠加线、涨跌停价位线
   syncBBISeries()
   syncLimitPriceLines()
@@ -3505,9 +3562,53 @@ function getVolumeProfileBars() {
   return volumeProfileBarsCache.data
 }
 
+/** 移除价格刻度上的 POC 数值标签 */
+function clearPocPriceLine() {
+  if (pocTagRaf) {
+    cancelAnimationFrame(pocTagRaf)
+    pocTagRaf = 0
+  }
+  if (pocPriceLineHandle && candleSeries) {
+    try { candleSeries.removePriceLine(pocPriceLineHandle) } catch { /* ignore */ }
+  }
+  pocPriceLineHandle = null
+}
+
+/** 把当前 POC 价格同步到价格刻度；price 为 null 表示当前无 POC（无数据或可见区间为空） */
+function applyPocPriceLine(price) {
+  if (!candleSeries) return
+  if (price == null) {
+    clearPocPriceLine()
+    return
+  }
+  if (pocPriceLineHandle) {
+    pocPriceLineHandle.applyOptions({ price })
+    return
+  }
+  pocPriceLineHandle = candleSeries.createPriceLine({
+    price,
+    color: POC_COLOR,
+    lineWidth: 1,
+    lineStyle: LineStyle.Dashed,
+    // 横向虚线由 volumeProfilePrimitive 绘制，这里只要刻度上那枚 POC 数值标签
+    lineVisible: false,
+    axisLabelVisible: true,
+    title: 'POC',
+  })
+}
+
+/** primitive 在图表绘制周期内回调，延到下一帧再动价格线，避免在绘制过程中改图 */
+function onPocPriceChange(price) {
+  if (pocTagRaf) cancelAnimationFrame(pocTagRaf)
+  pocTagRaf = requestAnimationFrame(() => {
+    pocTagRaf = 0
+    applyPocPriceLine(price)
+  })
+}
+
 function ensureVolumeProfilePrimitive() {
   if (volumeProfilePrimitive || !candleSeries) return
-  volumeProfilePrimitive = createVolumeProfilePrimitive(candleSeries, getVolumeProfileBars)
+  volumeProfilePrimitive = createVolumeProfilePrimitive(candleSeries, getVolumeProfileBars, onPocPriceChange)
 }
 
 /** 按开关状态挂载/卸载成交量分布 primitive（开关点击与指标重建两条路径都走这里） */
@@ -3515,11 +3616,12 @@ function syncVolumeProfilePrimitive() {
   if (showVolumeProfile.value) {
     ensureVolumeProfilePrimitive()
     volumeProfilePrimitive?.requestRedraw()
-  } else if (volumeProfilePrimitive) {
-    if (candleSeries) {
+  } else {
+    if (volumeProfilePrimitive && candleSeries) {
       try { candleSeries.detachPrimitive(volumeProfilePrimitive) } catch { /* ignore */ }
     }
     volumeProfilePrimitive = null
+    clearPocPriceLine()
   }
 }
 
@@ -3611,8 +3713,8 @@ function inferLimitPct(evidence) {
   // 注意 prop 名是 code（非 stockCode）；组件收到的代码为后缀格式（600519.SH / 000001.SZ / 00700.HK）或前缀格式（sh600519）
   const code = String(props.code || '').toUpperCase()
   if (!code) return null
-  // 港股 / 中证指数 / 海外指数 / 美股：无 A 股涨跌停概念
-  if (isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) return null
+  // 港股 / 中证指数 / 海外指数 / 美股 / 币安合约 / 美股永续：无 A 股涨跌停概念
+  if (isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value || isBinanceCode.value || isBitgetCode.value) return null
   if (code.endsWith('.US') || code.startsWith('US')) return null
   // 提取数字部分（兼容 600519.SH / sh600519 / 600519 等）
   const digits = code.replace(/[^\d]/g, '')
@@ -3740,6 +3842,222 @@ function syncDivergencePrimitive() {
 }
 
 // ===== Weis Wave（副图 histogram）走 syncSubPaneIndicators 的 subs 挂载体系，无需独立同步函数 =====
+
+// ===== 买卖点预测（多指标共振，主图箭头标注） =====
+
+/** 买卖点 OHLCV getter：带版本缓存 */
+function getBuySellBars() {
+  if (buySellBarsCache.version !== mergedRawRowsVersion.value) {
+    buySellBarsCache.data = extractOHLCV(mergedRawRows)
+    buySellBarsCache.version = mergedRawRowsVersion.value
+  }
+  return buySellBarsCache.data
+}
+
+/** 买卖点检测 getter：带版本+档位缓存（阈值或周期变化需重算） */
+function getBuySellData() {
+  const opt = BUY_SELL_SCORE_OPTIONS.find(o => o.value === buySellMinScore.value) || BUY_SELL_SCORE_OPTIONS[1]
+  const klt = activeKlt.value
+  if (
+    buySellCache.version === mergedRawRowsVersion.value
+    && buySellCache.score === opt.minScore
+    && buySellCache.klt === klt
+  ) {
+    return buySellCache.data
+  }
+  const { highs, lows, closes, vols, days } = getBuySellBars()
+  buySellCache.data = buySellPointsValues(highs, lows, closes, vols, {
+    minScore: opt.minScore,
+    minGroups: opt.minGroups,
+    dayKeys: days,
+    intraday: !DAILY_LIKE_KLT.has(klt),
+  })
+  buySellCache.version = mergedRawRowsVersion.value
+  buySellCache.score = opt.minScore
+  buySellCache.klt = klt
+  return buySellCache.data
+}
+
+function ensureBuySellPrimitive() {
+  if (buySellPrimitive || !candleSeries) return
+  buySellPrimitive = createBuySellPrimitive(candleSeries, getBuySellBars, getBuySellData)
+}
+
+// ===== 买卖点提示音 =====
+// 音频合成与 AudioContext 已抽到 kline/alertSound.ts，与后台信号监控引擎共享同一实例
+// （引擎在 kline/signalMonitor.ts 中统一裁决，避免同一只票响两次）。
+
+/**
+ * 用户手势内预热音频上下文。
+ * 必要：若「买卖点」是上次持久化开启的，本次进入页面没有点击手势，浏览器自动播放策略
+ * 会让后续轮询触发的响铃静默失效。
+ * 不「用后即注销」：系统休眠唤醒、音频设备切换后上下文可能重新变 suspended，
+ * 保留监听才能在每次手势时自动恢复。
+ */
+function primeAlertAudioOnGesture() {
+  primeAlertAudio()
+}
+
+/**
+ * 试听后的就绪自检：稍等音频上下文状态落定，若仍不是 running 就提示一句。
+ * 自动播放策略在无手势时会把上下文挂起，这种「静音失败」必须让用户看见，
+ * 否则只会以为提示音坏了。300ms 是等 resume() 的 Promise 落定，避免误报。
+ */
+function warnIfAudioNotReady(name) {
+  setTimeout(() => {
+    const st = alertAudioState()
+    if (st === 'running') return
+    message.warning(
+      `${name}试听无声：音频未就绪（${st}）。请先点击窗口内任意位置再试听；`
+      + '若仍无声，请检查系统音量与「音量合成器」中本应用的音量。',
+    )
+  }, 300)
+}
+
+/**
+ * 检测是否出现「新的」买卖点并播报提示音。
+ * 只在「买卖点」开启时评估；首次评估、换股/切周期/换档位只重置基线不响铃；
+ * 同一批历史箭头不会因轮询刷新、重绘或向左加载更多历史而重复播报。
+ */
+function checkBuySellAlert(data) {
+  if (!data || typeof data !== 'object') return
+  const { times } = getBuySellBars()
+  // 信号身份取所在 K 线的时间（Unix 秒，唯一且可比较，且不受加载更早历史导致的位移影响）
+  const latestTime = (arr) => {
+    for (let k = arr.length - 1; k >= 0; k--) {
+      const t = times[arr[k].i]
+      if (typeof t === 'number') return t
+    }
+    return null
+  }
+  const buyTime = latestTime(data.buys)
+  const sellTime = latestTime(data.sells)
+  const ctx = `${props.code}|${activeKlt.value}|${buySellMinScore.value}`
+  if (!buySellAlertState.ready || buySellAlertState.ctx !== ctx) {
+    buySellAlertState.ready = true
+    buySellAlertState.ctx = ctx
+    buySellAlertState.buy = buyTime
+    buySellAlertState.sell = sellTime
+    return
+  }
+  // 仅当最新信号时间晚于上次基线才算新信号：信号回撤（最新箭头消失）或加载更早历史都不会触发
+  const newerThan = (t, base) => t != null && (base == null || t > base)
+  const hasNewBuy = newerThan(buyTime, buySellAlertState.buy)
+  const hasNewSell = newerThan(sellTime, buySellAlertState.sell)
+  if (hasNewBuy) buySellAlertState.buy = buyTime
+  if (hasNewSell) buySellAlertState.sell = sellTime
+  if (!hasNewBuy && !hasNewSell) return
+  if (!buySellAlertSound.value) return
+  // 后台监控若已抢先响过同一根 K 线的同向信号，这里就不再重复（先判开关再抢占，见 alertSound.ts）
+  const claimedBuy = hasNewBuy && claimAlertToneOnce(`${ctx}|bs|buy|${buyTime}`)
+  const claimedSell = hasNewSell && claimAlertToneOnce(`${ctx}|bs|sell|${sellTime}`)
+  if (!claimedBuy && !claimedSell) return
+  playBuySellAlertTone(claimedBuy && claimedSell ? 'both' : claimedBuy ? 'buy' : 'sell')
+}
+
+/** 按开关状态挂载/卸载买卖点 primitive */
+function syncBuySellPrimitive() {
+  if (showBuySell.value) {
+    ensureBuySellPrimitive()
+    buySellPrimitive?.requestRedraw()
+    // 数据刷新（轮询/换股/切周期）后评估是否出现新信号；首次评估只记基线
+    checkBuySellAlert(getBuySellData())
+    return
+  }
+  if (buySellPrimitive) {
+    if (candleSeries) {
+      try { candleSeries.detachPrimitive(buySellPrimitive) } catch { /* ignore */ }
+    }
+    buySellPrimitive = null
+  }
+  // 关闭后重新开启时重新建立基线，不补播历史上已存在的箭头
+  buySellAlertState.ready = false
+}
+
+// ===== TEMA 斜率转折（独立买卖点标注，与 9 路共振体系互不影响） =====
+
+/** TEMA 转折点检测 getter：带版本+周期缓存（复用买卖点体系的 OHLCV 提取缓存） */
+function getTemaTurnData() {
+  const klt = activeKlt.value
+  if (
+    temaTurnCache.version === mergedRawRowsVersion.value
+    && temaTurnCache.klt === klt
+  ) {
+    return temaTurnCache.data
+  }
+  const { highs, lows, closes } = getBuySellBars()
+  temaTurnCache.data = temaTurnPointsValues(highs, lows, closes, {
+    intraday: !DAILY_LIKE_KLT.has(klt),
+  })
+  temaTurnCache.version = mergedRawRowsVersion.value
+  temaTurnCache.klt = klt
+  return temaTurnCache.data
+}
+
+function ensureTemaTurnPrimitive() {
+  if (temaTurnPrimitive || !candleSeries) return
+  temaTurnPrimitive = createTemaTurnPrimitive(candleSeries, getBuySellBars, getTemaTurnData)
+}
+
+/**
+ * 检测是否出现新的「T确」（TEMA 温和确认）信号并播报提示音。
+ * 只对 kind==='conf' 生效：T预(预警)、T强(急速买)、T急(急速卖) 不响铃；
+ * 首次评估与换股/切周期只重置基线不响铃（历史标记不补播）。
+ */
+function checkTemaTurnAlert(data) {
+  if (!data || typeof data !== 'object') return
+  const { times } = getBuySellBars()
+  // 从末尾取最新一个「确认」点的时间；kind==='impulse' 是升级后的确认点（标签为 T强/T急）不计入
+  const latestConfTime = (arr) => {
+    for (let k = arr.length - 1; k >= 0; k--) {
+      if (arr[k].kind !== 'conf') continue
+      const t = times[arr[k].i]
+      if (typeof t === 'number') return t
+    }
+    return null
+  }
+  const buyTime = latestConfTime(data.buys)
+  const sellTime = latestConfTime(data.sells)
+  const ctx = `${props.code}|${activeKlt.value}`
+  if (!temaTurnAlertState.ready || temaTurnAlertState.ctx !== ctx) {
+    temaTurnAlertState.ready = true
+    temaTurnAlertState.ctx = ctx
+    temaTurnAlertState.buy = buyTime
+    temaTurnAlertState.sell = sellTime
+    return
+  }
+  const newerThan = (t, base) => t != null && (base == null || t > base)
+  const hasNewBuy = newerThan(buyTime, temaTurnAlertState.buy)
+  const hasNewSell = newerThan(sellTime, temaTurnAlertState.sell)
+  if (hasNewBuy) temaTurnAlertState.buy = buyTime
+  if (hasNewSell) temaTurnAlertState.sell = sellTime
+  if (!hasNewBuy && !hasNewSell) return
+  if (!temaTurnAlertSound.value) return
+  // 与买卖点同一套全局去重：后台监控已响过的「T确」不重复响
+  const claimedBuy = hasNewBuy && claimAlertToneOnce(`${ctx}|tema|buy|${buyTime}`)
+  const claimedSell = hasNewSell && claimAlertToneOnce(`${ctx}|tema|sell|${sellTime}`)
+  if (!claimedBuy && !claimedSell) return
+  playTemaConfirmAlertTone(claimedBuy ? 'buy' : 'sell')
+}
+
+/** 按开关状态挂载/卸载 TEMA 转折 primitive */
+function syncTemaTurnPrimitive() {
+  if (showTemaTurn.value) {
+    ensureTemaTurnPrimitive()
+    temaTurnPrimitive?.requestRedraw()
+    // 数据刷新（轮询/换股/切周期）后评估是否出现新确认信号；首次评估只记基线
+    checkTemaTurnAlert(getTemaTurnData())
+    return
+  }
+  if (temaTurnPrimitive) {
+    if (candleSeries) {
+      try { candleSeries.detachPrimitive(temaTurnPrimitive) } catch { /* ignore */ }
+    }
+    temaTurnPrimitive = null
+  }
+  // 关闭后重新开启时重新建立基线，不补播历史上已存在的「T确」标记
+  temaTurnAlertState.ready = false
+}
 
 /** 清除当前正在画的预览框（保留已完成框） */
 function clearMeasure() {
@@ -4440,8 +4758,9 @@ function clearPoll() {
 
 function setupPoll() {
   clearPoll()
-  if (props.realtimeIntervalMs > 0 && props.code) {
-    pollTimer = setInterval(refreshLatestPoll, props.realtimeIntervalMs)
+  const ms = pollIntervalMs.value
+  if (ms > 0 && props.code) {
+    pollTimer = setInterval(refreshLatestPoll, ms)
   }
 }
 
@@ -4504,6 +4823,7 @@ function disposeChart() {
       try { candleSeries.detachPrimitive(volumeProfilePrimitive) } catch { /* ignore */ }
     }
     volumeProfilePrimitive = null
+    clearPocPriceLine()
     if (tdSequentialPrimitive && candleSeries) {
       try { candleSeries.detachPrimitive(tdSequentialPrimitive) } catch { /* ignore */ }
     }
@@ -4512,6 +4832,14 @@ function disposeChart() {
       try { candleSeries.detachPrimitive(divergencePrimitive) } catch { /* ignore */ }
     }
     divergencePrimitive = null
+    if (buySellPrimitive && candleSeries) {
+      try { candleSeries.detachPrimitive(buySellPrimitive) } catch { /* ignore */ }
+    }
+    buySellPrimitive = null
+    if (temaTurnPrimitive && candleSeries) {
+      try { candleSeries.detachPrimitive(temaTurnPrimitive) } catch { /* ignore */ }
+    }
+    temaTurnPrimitive = null
     if (bbiSeries) {
       try { chart.removeSeries(bbiSeries) } catch { /* ignore */ }
     }
@@ -4636,7 +4964,7 @@ async function loadOlderHistory() {
   }
   const kltSnap = activeKlt.value
   const codeSnap = props.code
-  const adjustSnap = DAILY_LIKE_KLT.has(kltSnap) ? activeAdjust.value : ''
+  const adjustSnap = adjustFlagForRequest.value
   const oldest = mergedRawRows[0]
   const end = formatEastMoneyEndFromOldest(oldest.day, kltSnap)
   if (!end) {
@@ -4697,9 +5025,12 @@ async function loadOlderHistory() {
 
 async function refreshLatestPoll() {
   if (!props.code || !candleSeries) return
+  // 10 秒节奏下，MAC 单次请求最长等 5 秒并可能继续走降级链，需防止两次轮询叠加
+  if (pollInFlight) return
+  pollInFlight = true
   const kltSnap = activeKlt.value
   const codeSnap = props.code
-  const adjustSnap = DAILY_LIKE_KLT.has(kltSnap) ? activeAdjust.value : ''
+  const adjustSnap = adjustFlagForRequest.value
   try {
     const meta = INTERVALS.find((x) => x.klt === kltSnap) || INTERVALS[0]
     const result = await GetStockKLineWithFallback(
@@ -4721,6 +5052,8 @@ async function refreshLatestPoll() {
     withProgrammaticTimeRange(() => applySeriesFromRaw())
   } catch {
     /* 静默，避免打断看盘 */
+  } finally {
+    pollInFlight = false
   }
 }
 
@@ -4865,8 +5198,15 @@ async function loadData() {
     syncDefaultLatestPanelRow()
     const { candles } = toSeriesData(mergedRawRows)
     if (!candles.length) {
-      errorText.value =
-        '暂无 K 线数据（如 600519.SH、000001.SZ、00700.HK、AAPL.US）'
+      errorText.value = isBinanceCode.value
+        ? (src === 'binance-futures-invalid-symbol'
+            ? '币安合约代码无效（示例：bn:BTCUSDT）'
+            : '币安合约数据不可达：请在「设置 → 币安合约代理」中配置专用代理后重试')
+        : isBitgetCode.value
+          ? (src === 'bitget-futures-invalid-symbol'
+              ? '美股永续合约代码无效（示例：bt:AAPLUSDT）'
+              : '美股永续合约数据不可达：请在「设置 → Bitget合约代理」中配置专用代理后重试')
+          : '暂无 K 线数据（如 600519.SH、000001.SZ、00700.HK、AAPL.US）'
       candleSeries?.setData([])
       volSeries?.setData([])
       syncIndicators()
@@ -4949,6 +5289,40 @@ const toggleTDSequential = makeToggle(showTDSequential, syncTDSequentialPrimitiv
 const toggleBBI = makeToggle(showBBI, syncBBISeries)
 const toggleLimitLines = makeToggle(showLimitLines, syncLimitPriceLines)
 const toggleDivergence = makeToggle(showDivergence, syncDivergencePrimitive)
+const toggleBuySell = makeToggle(showBuySell, () => {
+  // 在点击手势内预热音频上下文，规避浏览器自动播放策略对后续轮询响铃的拦截
+  primeAlertAudio()
+  syncBuySellPrimitive()
+})
+/** 切换买卖点提示音；开启时试听一声以便确认音量/设备正常 */
+function toggleBuySellAlertSound() {
+  buySellAlertSound.value = !buySellAlertSound.value
+  if (buySellAlertSound.value) {
+    primeAlertAudio()
+    playBuySellAlertTone('buy')
+    warnIfAudioNotReady('买卖点提示音')
+  }
+}
+const toggleTemaTurn = makeToggle(showTemaTurn, () => {
+  // 同买卖点：在点击手势内预热音频上下文，保证后续轮询触发的响铃能出声
+  primeAlertAudio()
+  syncTemaTurnPrimitive()
+})
+/** 切换「T确」提示音；开启时试听一声以便确认音量/设备正常 */
+function toggleTemaTurnAlertSound() {
+  temaTurnAlertSound.value = !temaTurnAlertSound.value
+  if (temaTurnAlertSound.value) {
+    primeAlertAudio()
+    playTemaConfirmAlertTone('buy')
+    warnIfAudioNotReady('T确提示音')
+  }
+}
+/** 循环切换买卖点共振阈值：灵敏(2) → 标准(3) → 严格(4) */
+function cycleBuySellScore() {
+  const i = BUY_SELL_SCORE_OPTIONS.findIndex(o => o.value === buySellMinScore.value)
+  buySellMinScore.value = BUY_SELL_SCORE_OPTIONS[(i + 1) % BUY_SELL_SCORE_OPTIONS.length].value
+  syncBuySellPrimitive()
+}
 const toggleWeisWave = makeToggle(showWeisWave, syncIndicators)
 /** 切换背离指标源（RSI/MACD/KDJ），重新检测+重绘 */
 function setDivergenceSource(src) {
@@ -5092,20 +5466,23 @@ watch(longCostStr, (v) => {
 })
 
 onMounted(() => {
-  console.log('[DEBUG onMounted] starting')
+  try {
+    sidebarCollapsed.value = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+  } catch {}
+  // 任意交互即预热音频上下文（自动播放策略要求手势后才能出声），并持续在手势中恢复
+  window.addEventListener('pointerdown', primeAlertAudioOnGesture)
+  window.addEventListener('keydown', primeAlertAudioOnGesture)
   nextTick(() => {
-    console.log('[DEBUG onMounted] nextTick callback')
-    console.log('[DEBUG onMounted] current longEntryStr:', longEntryStr.value, 'showLongPosition:', showLongPosition.value)
     ensureChart()
-    console.log('[DEBUG onMounted] after ensureChart, candleSeries:', !!candleSeries)
     loadData()
-    console.log('[DEBUG onMounted] after loadData call')
     setupPoll()
     refreshFollowStatus()
   })
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', primeAlertAudioOnGesture)
+  window.removeEventListener('keydown', primeAlertAudioOnGesture)
   disposeChart()
 })
 
@@ -5145,9 +5522,9 @@ watch(activeAdjust, () => {
   loadData()
 })
 
-// 代码切换时（调用方未用 :key 重建组件的防御性处理）按 ETF/港股/中证指数/海外指数规则重置复权默认值
+// 代码切换时（调用方未用 :key 重建组件的防御性处理）按 ETF/港股/中证指数/海外指数/币安合约/美股永续规则重置复权默认值
 watch(() => props.code, () => {
-  const next = (isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value) ? 'none' : DEFAULT_ADJUST
+  const next = (isEtfCode.value || isHkCode.value || isCsiIndexCode.value || isGlobalIndexCode.value || isBinanceCode.value || isBitgetCode.value) ? 'none' : DEFAULT_ADJUST
   if (activeAdjust.value !== next) {
     activeAdjust.value = next
   }
@@ -5174,6 +5551,9 @@ watch(
   () => setupPoll(),
 )
 
+// 数据源变化会改变实际轮询间隔（通达信MAC→10秒），需重建定时器
+watch(activeDataSource, () => setupPoll())
+
 watch(
   [showLongPosition, longEntryStr, longStopStr, longTakeProfitStr],
   () => {
@@ -5195,314 +5575,314 @@ watch(showLongPosition, (newVal) => {
 <template>
   <div class="lw-kline-root" :class="{ 'lw-kline--dark': darkTheme }">
     <div class="lw-kline-body">
-      <div class="lw-kline-sidebar">
-        <div class="lw-kline-sidebar__inner">
+      <div class="lw-kline-sidebar" :class="{ 'lw-kline-sidebar--collapsed': sidebarCollapsed }">
+        <div v-show="!sidebarCollapsed" class="lw-kline-sidebar__inner">
           <NFlex vertical :size="6">
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(239,68,68,0.08); border-radius: 4px; border-left: 3px solid #ef4444; color: #ef4444">📈趋势</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showMA ? 'primary' : 'default'" :secondary="!showMA" @click="toggleMA">MA</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ma }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.ma }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showEMA ? 'primary' : 'default'" :secondary="!showEMA" @click="toggleEMA">EMA</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ema }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.ema }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showBBI ? 'primary' : 'default'" :secondary="!showBBI" @click="toggleBBI">BBI</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.bbi }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.bbi }}</span>
                 </NTooltip>
-                <NTooltip :delay="500" placement="right-start">
+                <NTooltip v-if="!isBinanceCode && !isBitgetCode" :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showLimitLines ? 'primary' : 'default'" :secondary="!showLimitLines" @click="toggleLimitLines">涨跌停</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.limitLines }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.limitLines }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showKAMA ? 'primary' : 'default'" :secondary="!showKAMA" @click="toggleKAMA">KAMA</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.kama }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.kama }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showSupertrend ? 'primary' : 'default'" :secondary="!showSupertrend" @click="toggleSupertrend">STrend</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.supertrend }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.supertrend }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showSAR ? 'primary' : 'default'" :secondary="!showSAR" @click="toggleSAR">SAR</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.sar }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.sar }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showIchimoku ? 'primary' : 'default'" :secondary="!showIchimoku" @click="toggleIchimoku">Ichi</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ichimoku }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.ichimoku }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showAroon ? 'primary' : 'default'" :secondary="!showAroon" @click="toggleAroon">Aroon</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.aroon }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.aroon }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showDEMA ? 'primary' : 'default'" :secondary="!showDEMA" @click="toggleDEMA">DEMA</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.dema }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.dema }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showSATS ? 'primary' : 'default'" :secondary="!showSATS" @click="toggleSATS">SATS</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.sats }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.sats }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showAlligator ? 'primary' : 'default'" :secondary="!showAlligator" @click="toggleAlligator">Gator</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.alligator }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.alligator }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showHullMA ? 'primary' : 'default'" :secondary="!showHullMA" @click="toggleHullMA">Hull</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.hullMA }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.hullMA }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showTEMA ? 'primary' : 'default'" :secondary="!showTEMA" @click="toggleTEMA">TEMA</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.tema }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.tema }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showTEMASlope ? 'primary' : 'default'" :secondary="!showTEMASlope" @click="toggleTEMASlope">TEMA斜率</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.temaSlope }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.temaSlope }}</span>
                 </NTooltip>
-              </NFlex>
+              </div>
             </div>
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(245,158,11,0.08); border-radius: 4px; border-left: 3px solid #f59e0b; color: #d97706">🎢波动</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showBOLL ? 'primary' : 'default'" :secondary="!showBOLL" @click="toggleBOLL">BOLL</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.boll }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.boll }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showKeltner ? 'primary' : 'default'" :secondary="!showKeltner" @click="toggleKeltner">Kelt</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.keltner }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.keltner }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showDonchian ? 'primary' : 'default'" :secondary="!showDonchian" @click="toggleDonchian">Donch</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.donchian }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.donchian }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showATR ? 'primary' : 'default'" :secondary="!showATR" @click="toggleATR">ATR</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.atr }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.atr }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showAvgAmp ? 'primary' : 'default'" :secondary="!showAvgAmp" @click="toggleAvgAmp">均幅</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.avgAmp }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.avgAmp }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showTTMSqueeze ? 'primary' : 'default'" :secondary="!showTTMSqueeze" @click="toggleTTMSqueeze">TTM</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ttmSqueeze }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.ttmSqueeze }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showZigZag ? 'primary' : 'default'" :secondary="!showZigZag" @click="toggleZigZag">ZigZag</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.zigzag }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.zigzag }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showFractal ? 'primary' : 'default'" :secondary="!showFractal" @click="toggleFractal">Fractal</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.fractal }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.fractal }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showMassIndex ? 'primary' : 'default'" :secondary="!showMassIndex" @click="toggleMassIndex">Mass</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.massIndex }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.massIndex }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showSMC ? 'primary' : 'default'" :secondary="!showSMC" @click="toggleSMC">SMC</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.smc }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.smc }}</span>
                 </NTooltip>
-              </NFlex>
+              </div>
             </div>
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(59,130,246,0.08); border-radius: 4px; border-left: 3px solid #3b82f6; color: #2563eb">💫动量</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showMACD ? 'primary' : 'default'" :secondary="!showMACD" @click="toggleMACD">MACD</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.macd }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.macd }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showKDJ ? 'primary' : 'default'" :secondary="!showKDJ" @click="toggleKDJ">KDJ</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.kdj }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.kdj }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showRSI ? 'primary' : 'default'" :secondary="!showRSI" @click="toggleRSI">RSI</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.rsi }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.rsi }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showCCI ? 'primary' : 'default'" :secondary="!showCCI" @click="toggleCCI">CCI</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.cci }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.cci }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showWilliamsR ? 'primary' : 'default'" :secondary="!showWilliamsR" @click="toggleWilliamsR">W%R</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.williamsR }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.williamsR }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showStochRSI ? 'primary' : 'default'" :secondary="!showStochRSI" @click="toggleStochRSI">SRSI</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.stochRsi }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.stochRsi }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showCMO ? 'primary' : 'default'" :secondary="!showCMO" @click="toggleCMO">CMO</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.cmo }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.cmo }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showAO ? 'primary' : 'default'" :secondary="!showAO" @click="toggleAO">AO</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ao }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.ao }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showTRIX ? 'primary' : 'default'" :secondary="!showTRIX" @click="toggleTRIX">TRIX</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.trix }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.trix }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showTRIXSlope ? 'primary' : 'default'" :secondary="!showTRIXSlope" @click="toggleTRIXSlope">TRIX斜率</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.trixSlope }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.trixSlope }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showROC ? 'primary' : 'default'" :secondary="!showROC" @click="toggleROC">ROC</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.roc }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.roc }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showSMI ? 'primary' : 'default'" :secondary="!showSMI" @click="toggleSMI">SMI</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.smi }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.smi }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showCoppock ? 'primary' : 'default'" :secondary="!showCoppock" @click="toggleCoppock">Coppck</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.coppock }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.coppock }}</span>
                 </NTooltip>
-              </NFlex>
+              </div>
             </div>
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(16,185,129,0.08); border-radius: 4px; border-left: 3px solid #10b981; color: #059669">📊量价</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showOBV ? 'primary' : 'default'" :secondary="!showOBV" @click="toggleOBV">OBV</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.obv }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.obv }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showVWAP ? 'primary' : 'default'" :secondary="!showVWAP" @click="toggleVWAP">VWAP</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.vwap }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.vwap }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showMFI ? 'primary' : 'default'" :secondary="!showMFI" @click="toggleMFI">MFI</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.mfi }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.mfi }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showCMF ? 'primary' : 'default'" :secondary="!showCMF" @click="toggleCMF">CMF</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.cmf }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.cmf }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showForceIndex ? 'primary' : 'default'" :secondary="!showForceIndex" @click="toggleForceIndex">FI</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.forceIndex }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.forceIndex }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showAD ? 'primary' : 'default'" :secondary="!showAD" @click="toggleAD">A/D</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ad }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.ad }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showChaikinOsc ? 'primary' : 'default'" :secondary="!showChaikinOsc" @click="toggleChaikinOsc">ChkOsc</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.chaikinOsc }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.chaikinOsc }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showVWAPBands ? 'primary' : 'default'" :secondary="!showVWAPBands" @click="toggleVWAPBands">VWBnd</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.vwapBands }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.vwapBands }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showVolumeProfile ? 'primary' : 'default'" :secondary="!showVolumeProfile" @click="toggleVolumeProfile">VPVR</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.volumeProfile }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.volumeProfile }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showTDSequential ? 'primary' : 'default'" :secondary="!showTDSequential" @click="toggleTDSequential">九转</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.tdSequential }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.tdSequential }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
@@ -5513,54 +5893,79 @@ watch(showLongPosition, (newVal) => {
                       </NButton>
                     </NFlex>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.divergence }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.divergence }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NFlex :size="2" :wrap="false">
+                      <NButton size="tiny" :type="showBuySell ? 'primary' : 'default'" :secondary="!showBuySell" @click="toggleBuySell">买卖点</NButton>
+                      <NButton v-if="showBuySell" size="tiny" quaternary style="padding: 0 4px; font-size: 11px" @click="cycleBuySellScore">
+                        {{ buySellScoreLabel }}
+                      </NButton>
+                      <NButton v-if="showBuySell" size="tiny" quaternary style="padding: 0 4px; font-size: 11px" @click="toggleBuySellAlertSound">
+                        {{ buySellAlertSound ? '音开' : '音关' }}
+                      </NButton>
+                    </NFlex>
+                  </template>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.buySell }}</span>
+                </NTooltip>
+                <NTooltip :delay="500" placement="right-start">
+                  <template #trigger>
+                    <NFlex :size="2" :wrap="false">
+                      <NButton size="tiny" :type="showTemaTurn ? 'primary' : 'default'" :secondary="!showTemaTurn" @click="toggleTemaTurn">TEMA转折</NButton>
+                      <NButton v-if="showTemaTurn" size="tiny" quaternary style="padding: 0 4px; font-size: 11px" @click="toggleTemaTurnAlertSound">
+                        {{ temaTurnAlertSound ? '音开' : '音关' }}
+                      </NButton>
+                    </NFlex>
+                  </template>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.temaTurn }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showWeisWave ? 'primary' : 'default'" :secondary="!showWeisWave" @click="toggleWeisWave">WWave</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.weisWave }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.weisWave }}</span>
                 </NTooltip>
-              </NFlex>
+              </div>
             </div>
             <div class="lw-kline-sidebar__section">
               <NText depth="3" style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 4px; padding: 2px 6px; background: rgba(139,92,246,0.08); border-radius: 4px; border-left: 3px solid #8b5cf6; color: #7c3aed">📏强度</NText>
-              <NFlex :size="4" wrap style="row-gap: 4px">
+              <div class="lw-kline-sidebar__group">
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showADX ? 'primary' : 'default'" :secondary="!showADX" @click="toggleADX">ADX</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.adx }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.adx }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showPivot ? 'primary' : 'default'" :secondary="!showPivot" @click="togglePivot">Pivot</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.pivot }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.pivot }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showCHOP ? 'primary' : 'default'" :secondary="!showCHOP" @click="toggleCHOP">CHOP</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.chop }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.chop }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showElderRay ? 'primary' : 'default'" :secondary="!showElderRay" @click="toggleElderRay">Elder</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.elderRay }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.elderRay }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showUlcerIndex ? 'primary' : 'default'" :secondary="!showUlcerIndex" @click="toggleUlcerIndex">Ulcer</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.ulcerIndex }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.ulcerIndex }}</span>
                 </NTooltip>
                 <NTooltip :delay="500" placement="right-start">
                   <template #trigger>
                     <NButton size="tiny" :type="showSignalRatio ? 'primary' : 'default'" :secondary="!showSignalRatio" @click="toggleSignalRatio">信号比</NButton>
                   </template>
-                  <span style="white-space: pre-line; text-align: left">{{ indicatorTips.signalRatio }}</span>
+                  <span style="display: block; white-space: pre-line; text-align: left">{{ indicatorTips.signalRatio }}</span>
                 </NTooltip>
                 <NButton
                   v-if="SHOW_CHIP_TOOLBAR_BUTTON"
@@ -5571,10 +5976,16 @@ watch(showLongPosition, (newVal) => {
                 >
                   筹码
                 </NButton>
-              </NFlex>
+              </div>
             </div>
           </NFlex>
         </div>
+        <button
+          type="button"
+          class="lw-kline-sidebar__toggle"
+          :title="sidebarCollapsed ? '展开指标栏' : '收起指标栏'"
+          @click="toggleSidebar"
+        >{{ sidebarCollapsed ? '›' : '‹' }}</button>
       </div>
       <div class="lw-kline-main">
         <NFlex :size="6" wrap style="row-gap: 4px; align-items: center">
@@ -5621,7 +6032,7 @@ watch(showLongPosition, (newVal) => {
             {{ it.label }}
           </NButton>
           <span style="width: 12px" />
-          <template v-if="DAILY_LIKE_KLT.has(activeKlt) && !isEtfCode.value">
+          <template v-if="DAILY_LIKE_KLT.has(activeKlt) && !isEtfCode.value && !isBinanceCode && !isBitgetCode">
             <NText depth="3" style="font-size: 12px; margin-right: 2px">复权</NText>
             <NButton
               v-for="opt in ADJUST_OPTIONS"
@@ -5936,20 +6347,6 @@ watch(showLongPosition, (newVal) => {
             />
           </div>
         </div>
-        <NFlex align="center" :size="8" class="lw-kline-hint-row">
-          <NText depth="3" class="lw-kline-hint-text">
-            {{
-              realtimeIntervalMs > 0
-                ? `每 ${Math.round(realtimeIntervalMs / 1000)} 秒刷新`
-                : '切换周期后加载'
-            }}
-            · 按住拖动查看左侧历史时会自动加载更早 K 线
-            <span v-if="activeDataSource" class="lw-kline-source-tag" :class="{ 'lw-kline-source-tag--fallback': activeDataSource !== 'eastmoney' && activeDataSource !== 'tdx-mac' && activeDataSource !== 'tdx-mac-ex' }">
-              {{ activeDataSource === 'eastmoney' ? '东方财富' : activeDataSource === 'tdx-mac' ? '通达信MAC' : activeDataSource === 'tdx-mac-ex' ? '通达信MAC扩展' : activeDataSource === 'sina' ? '新浪财经' : activeDataSource === 'tencent' ? '腾讯财经' : activeDataSource === 'tdx' ? '通达信' : activeDataSource }}
-            </span>
-          </NText>
-          <NSpin v-if="loading || loadingHistory" size="small" />
-        </NFlex>
       </div>
     </div>
   </div>
@@ -5984,19 +6381,84 @@ watch(showLongPosition, (newVal) => {
 }
 .lw-kline-sidebar {
   flex: 0 0 auto;
-  width: 140px;
-  min-width: 120px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* 一行放 4 个指标按钮所需的宽度；窄屏时按视口收缩 */
+  width: clamp(260px, 20vw, 340px);
+  min-width: 240px;
+  /* 靠 .lw-kline-body 的 stretch 与右侧 K 线区等高铺满 */
+  overflow: hidden;
+  transition: width 0.15s ease;
+}
+/* 收起后只留一条窄边，宽度让给 K 线 */
+.lw-kline-sidebar--collapsed {
+  width: 18px;
+  min-width: 18px;
 }
 .lw-kline--dark .lw-kline-sidebar {
   border-color: #3f3f46;
 }
 .lw-kline-sidebar__inner {
   min-width: 0;
-  position: sticky;
-  top: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 指标放不下时自身滚动，不撑高页面 */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* 收起/展开按钮：钉在指标栏右上角，不随指标列表滚动 */
+.lw-kline-sidebar__toggle {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 5;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  line-height: 1;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #64748b;
+}
+.lw-kline-sidebar__toggle:hover {
+  color: #0ea5e9;
+  border-color: #0ea5e9;
+}
+.lw-kline--dark .lw-kline-sidebar__toggle {
+  background: #18181b;
+  border-color: #3f3f46;
+  color: #94a3b8;
+}
+.lw-kline--dark .lw-kline-sidebar__toggle:hover {
+  color: #38bdf8;
+  border-color: #38bdf8;
 }
 .lw-kline-sidebar__section {
   margin-bottom: 6px;
+}
+/* 指标按钮一行 4 个，行数减半便于整屏显示 */
+.lw-kline-sidebar .lw-kline-sidebar__group {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.lw-kline-sidebar .lw-kline-sidebar__group > .n-button {
+  width: 100%;
+  min-width: 0;
+}
+/* 带附加开关的复合项（背离/买卖点/TEMA转折）占两列，否则会挤出格子 */
+.lw-kline-sidebar .lw-kline-sidebar__group > .n-flex {
+  grid-column: span 2;
+}
+/* 过长的英文指标名省略显示，悬停有完整说明 */
+.lw-kline-sidebar .lw-kline-sidebar__group :deep(.n-button__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .lw-kline-main {
   flex: 1 1 0;
@@ -6004,17 +6466,6 @@ watch(showLongPosition, (newVal) => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-.lw-kline-hint-row {
-  min-width: 0;
-  max-width: 100%;
-}
-.lw-kline-hint-text {
-  font-size: 12px;
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }
 .lw-kline-toolbar-name {
   font-size: 14px;
@@ -6194,29 +6645,6 @@ watch(showLongPosition, (newVal) => {
   width: 100%;
   min-height: 0;
   display: block;
-}
-.lw-kline-source-tag {
-  display: inline-block;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 5px;
-  border-radius: 3px;
-  background: #e0f2fe;
-  color: #0369a1;
-  vertical-align: middle;
-  margin-left: 4px;
-}
-.lw-kline--dark .lw-kline-source-tag {
-  background: #1e3a5f;
-  color: #7dd3fc;
-}
-.lw-kline-source-tag--fallback {
-  background: #fef3c7;
-  color: #b45309;
-}
-.lw-kline--dark .lw-kline-source-tag--fallback {
-  background: #422006;
-  color: #fbbf24;
 }
 .lw-kline-signal-summary {
   width: 100%;

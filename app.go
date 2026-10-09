@@ -23,6 +23,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	// 内嵌 IANA 时区数据库，避免发行版二进制因找不到 GOROOT/lib/time/zoneinfo.zip
+	// 导致 time.LoadLocation("Asia/Shanghai") 失败（loc 为 nil 时 Time.In 会 panic）
+	_ "time/tzdata"
 
 	"github.com/inconshreveable/go-update"
 	"github.com/samber/lo"
@@ -49,7 +52,7 @@ type App struct {
 	SponsorInfo        map[string]any
 	VipLevel           int64
 	summaryMu          sync.Mutex
-	summaryCancel      context.CancelFunc
+	summarySession     *summarySession
 	agentMu            sync.Mutex
 	agentCancel        context.CancelFunc
 	stockAlertMu       sync.Mutex
@@ -100,12 +103,20 @@ func (a *App) GetSponsorInfo() map[string]any {
 	return a.SponsorInfo
 }
 
-// GetEffectiveSponsorVip 从本地配置解密赞助信息并判断当前是否在 VIP 有效期内（与 ai-assistant-web / data.EffectiveSponsorVipLevel 一致）。
+// GetEffectiveSponsorVip 从本地配置解密赞助信息并判断当前是否在 VIP 有效期内
+// （与 ai-assistant-web / data.EffectiveSponsorVipStatus 一致）。
+// 返回值同时带上未生效原因与赞助码中的时间，使「关于页显示 VIP2，功能却提示权限不足」这类
+// 展示与门控不一致的问题可以直接在界面上看到原因。
 func (a *App) GetEffectiveSponsorVip() map[string]any {
-	level, active := data.EffectiveSponsorVipLevel()
+	status := data.EffectiveSponsorVipStatus()
 	return map[string]any{
-		"vipLevel": level,
-		"active":   active,
+		"vipLevel":  status.Level,
+		"active":    status.Active,
+		"reason":    status.Reason,
+		"user":      status.User,
+		"startTime": status.StartTime,
+		"endTime":   status.EndTime,
+		"authTime":  status.AuthTime,
 	}
 }
 
@@ -253,15 +264,46 @@ func (a *App) CheckSponsorCode(sponsorCode string) map[string]any {
 }
 
 func (a *App) CheckUpdate(flag int) {
+	// 手动检查（flag==1）时向前端持续反馈进度。
+	// GitHub API 与代理测速在国内网络下可能耗时数十秒，若中间状态不推送，
+	// 界面从点击到出结果之间会完全没有响应。
+	manualCheck := flag == 1 && a.ctx != nil
+	emitStatus := func(phase, message string) {
+		if !manualCheck {
+			return
+		}
+		runtime.EventsEmit(a.ctx, "updateCheckStatus", map[string]any{"phase": phase, "message": message})
+	}
+	emitFailed := func(stage, message string) {
+		if !manualCheck {
+			return
+		}
+		runtime.EventsEmit(a.ctx, "updateCheckFailed", map[string]any{
+			"stage":       stage,
+			"message":     message,
+			"releasesUrl": "https://github.com/ArvinLovegood/go-stock/releases",
+		})
+	}
+	emitDone := func(hasUpdate bool) {
+		if !manualCheck {
+			return
+		}
+		runtime.EventsEmit(a.ctx, "updateCheckDone", map[string]any{"hasUpdate": hasUpdate})
+	}
+
+	emitStatus("connecting", "正在连接更新服务器...")
+
 	sponsorCode := strutil.Trim(a.GetConfig().SponsorCode)
 	if sponsorCode != "" {
 		raw, err := data.SafeDecryptSponsorCode(sponsorCode, BuildKey)
 		if err != nil {
 			logger.SugaredLogger.Errorf("赞助码解密失败: %s", err.Error())
+			emitFailed("sponsor", "赞助码校验失败，无法检查更新。")
 			return
 		}
 		if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
 			logger.SugaredLogger.Error(err.Error())
+			emitFailed("sponsor", "赞助码校验失败，无法检查更新。")
 			return
 		}
 	}
@@ -276,6 +318,7 @@ func (a *App) CheckUpdate(flag int) {
 				go a.syncNews()
 			}
 		}
+		emitDone(false)
 		return
 	}
 
@@ -289,36 +332,44 @@ func (a *App) CheckUpdate(flag int) {
 		"X-GitHub-Api-Version": "2022-11-28",
 	}
 
+	// 共享客户端超时 300s：GitHub 不可达时手动检查会长时间挂起，必须尽快失败并给出提示
+	apiClient := data.CreateHTTPClientWithTimeout(20 * time.Second)
+
 	releaseVersion := &models.GitHubReleaseVersion{}
 	if updateChannel == "release" {
-		resp, err := data.SharedHTTPClient.R().
+		resp, err := apiClient.R().
 			SetHeaders(githubApiHeaders).
 			SetResult(releaseVersion).
 			Get("https://api.github.com/repos/ArvinLovegood/go-stock/releases/latest")
 		if err != nil {
 			logger.SugaredLogger.Errorf("get github release version error:%s", err.Error())
+			emitFailed("metadata", "无法连接更新服务器，请检查网络后重试。")
 			return
 		}
 		if resp.StatusCode() != 200 {
 			logger.SugaredLogger.Errorf("get github release version failed, status:%d", resp.StatusCode())
+			emitFailed("metadata", fmt.Sprintf("更新服务器返回异常状态(%d)，请稍后重试。", resp.StatusCode()))
 			return
 		}
 	} else {
 		var releases []models.GitHubReleaseVersion
-		resp, err := data.SharedHTTPClient.R().
+		resp, err := apiClient.R().
 			SetHeaders(githubApiHeaders).
 			SetResult(&releases).
 			Get("https://api.github.com/repos/ArvinLovegood/go-stock/releases")
 		if err != nil {
 			logger.SugaredLogger.Errorf("get github releases error:%s", err.Error())
+			emitFailed("metadata", "无法连接更新服务器，请检查网络后重试。")
 			return
 		}
 		if resp.StatusCode() != 200 {
 			logger.SugaredLogger.Errorf("get github releases failed, status:%d", resp.StatusCode())
+			emitFailed("metadata", fmt.Sprintf("更新服务器返回异常状态(%d)，请稍后重试。", resp.StatusCode()))
 			return
 		}
 		if len(releases) == 0 {
 			logger.SugaredLogger.Errorf("no releases found")
+			emitFailed("metadata", "未获取到任何发布版本，请稍后重试。")
 			return
 		}
 		if updateChannel == "pre" {
@@ -345,15 +396,17 @@ func (a *App) CheckUpdate(flag int) {
 	}
 
 	if releaseVersion.TagName != Version {
+		emitStatus("preparing", "发现新版本 "+releaseVersion.TagName+"，正在准备更新...")
+
 		tag := &models.Tag{}
-		tagResp, tagErr := data.SharedHTTPClient.R().
+		tagResp, tagErr := apiClient.R().
 			SetHeaders(githubApiHeaders).
 			SetResult(tag).
 			Get("https://api.github.com/repos/ArvinLovegood/go-stock/git/ref/tags/" + releaseVersion.TagName)
 		if tagErr == nil && tagResp.StatusCode() == 200 && tag.Object.Url != "" {
 			releaseVersion.Tag = *tag
 			commit := &models.Commit{}
-			commitResp, commitErr := data.SharedHTTPClient.R().
+			commitResp, commitErr := apiClient.R().
 				SetHeaders(githubApiHeaders).
 				SetResult(commit).
 				Get(tag.Object.Url)
@@ -380,18 +433,42 @@ func (a *App) CheckUpdate(flag int) {
 			// 裸二进制替换会破坏代码签名且在 App Translocation/DMG 场景必然失败
 			assetName = "go-stock-darwin-universal.zip"
 		} else if IsLinux() {
-			assetName = "go-stock-linux-amd64"
+			if IsArm64() {
+				assetName = "go-stock-linux-arm64"
+			} else {
+				assetName = "go-stock-linux-amd64"
+			}
 		}
 
+		assetFound := false
 		for _, asset := range releaseVersion.Assets {
 			if asset.Name == assetName {
 				downloadUrl = asset.BrowserDownloadUrl
+				assetFound = true
 				break
 			}
 		}
 
 		if downloadUrl == "" {
 			downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, assetName)
+		}
+
+		// 当前平台的安装包未包含在该 Release 中（如历史版本未发布 Linux 资产）时，
+			// 所有下载源必然 404，直接失败并引导手动下载，避免无谓的测速与重试。
+		// 赞助码用户可能配置了自定义 CDN 地址（winDownUrl 等），不在此拦截。
+		if !assetFound && sponsorCode == "" {
+			logger.SugaredLogger.Errorf("release %s 中未找到当前平台的安装包: %s", releaseVersion.TagName, assetName)
+			emitDone(true)
+			go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+				"downloadId": fmt.Sprintf("update-%d", time.Now().UnixNano()),
+				"version":    releaseVersion.TagName,
+				"error":      "该版本未发布当前平台的安装包，请前往发布页手动下载。",
+				"manualLinks": map[string]any{
+					"mirror":   "https://gh.927223.xyz/" + downloadUrl,
+					"original": downloadUrl,
+				},
+			})
+			return
 		}
 
 		originalDownloadUrl := downloadUrl
@@ -411,6 +488,7 @@ func (a *App) CheckUpdate(flag int) {
 		var bestProxy string
 		var proxySpeed float64
 		if useProxy {
+			emitStatus("speedtest", "正在测速选择最快的下载通道，可能需要几秒钟...")
 			bestProxy, proxySpeed = data.SelectFastestProxy(a.ctx, originalDownloadUrl)
 		}
 
@@ -424,6 +502,8 @@ func (a *App) CheckUpdate(flag int) {
 			sources = append(sources, downloadSource{originalDownloadUrl, ""})
 		}
 		sources = append(sources, downloadSource{mirrorDownloadUrl, "gh.927223.xyz"})
+
+		emitDone(true)
 
 		downloadID := fmt.Sprintf("update-%d", time.Now().UnixNano())
 		go runtime.EventsEmit(a.ctx, "updateDownloadStart", map[string]any{
@@ -553,6 +633,7 @@ func (a *App) CheckUpdate(flag int) {
 			})
 		}
 	} else {
+		emitDone(false)
 		if flag == 1 {
 			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
 				"time":    "当前版本：" + Version,
@@ -600,16 +681,13 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 		// 赞助码 JSON 字段类型不保证（如 vipLevel 可能为数字），统一用 convertor.ToString 安全转换，
 		// 禁止 .(string) 硬断言（interface conversion panic 会导致整个进程闪退）
 		vipLevel = convertor.ToString(a.SponsorInfo["vipLevel"])
-		vipStartTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipStartTime"]), time.Local)
-		vipEndTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipEndTime"]), time.Local)
-		vipAuthTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipAuthTime"]), time.Local)
-		if err != nil {
-			logger.SugaredLogger.Error(err.Error())
-			return "", vipLevel, false
-		}
-
-		if time.Now().After(vipAuthTime) && time.Now().After(vipStartTime) && time.Now().Before(vipEndTime) {
-			isVip = true
+		// 有效期判定与展示端（EffectiveSponsorVipStatus）共用同一份规则：
+		// 这里曾用同一个 err 承接三次 time.ParseInLocation，任一字段解析失败都会被后一次的 nil 覆盖，
+		// 导致「关于页按原始字段展示为 VIP2，功能门控却判为无效」的两套结论。
+		status := data.EvaluateSponsorVipInfo(a.SponsorInfo)
+		isVip = status.Active
+		if !isVip {
+			logger.SugaredLogger.Warnf("赞助码权益未生效: level=%s reason=%s", vipLevel, status.Reason)
 		}
 
 		if IsWindows() {
@@ -628,25 +706,31 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 			}
 		}
 		if IsMacOS() {
+			// 必须使用 .app bundle 的 zip 包（见 update_helper_darwin.go），
+			// 裸二进制 URL 会导致 ApplyMacUpdate 解压失败
 			if isVip {
 				if a.SponsorInfo["macDownUrl"] == nil {
-					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
+					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal.zip", releaseVersion.TagName)
 				} else {
 					downloadUrl = convertor.ToString(a.SponsorInfo["macDownUrl"])
 				}
 			} else {
-				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
+				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal.zip", releaseVersion.TagName)
 			}
 		}
 		if IsLinux() {
+			linuxAssetName := "go-stock-linux-amd64"
+			if IsArm64() {
+				linuxAssetName = "go-stock-linux-arm64"
+			}
 			if isVip {
 				if a.SponsorInfo["linuxDownUrl"] == nil {
-					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
+					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, linuxAssetName)
 				} else {
 					downloadUrl = convertor.ToString(a.SponsorInfo["linuxDownUrl"])
 				}
 			} else {
-				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
+				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, linuxAssetName)
 			}
 		}
 
@@ -906,6 +990,16 @@ func (a *App) domReady(ctx context.Context) {
 			a.setCronEntry("MonitorFollowedStockCostPrices", idCostPrice)
 		}
 
+		// 后台买卖点信号监控节拍：窗口最小化时前端定时器会被深度节流，故由 Go 侧按分钟唤醒前端引擎
+		idSignalMonitor, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", 60), func() {
+			a.signalMonitorTick()
+		})
+		if err != nil {
+			logger.SugaredLogger.Errorf("AddFunc signalMonitorTick error:%s", err.Error())
+		} else {
+			a.setCronEntry("SignalMonitorTick", idSignalMonitor)
+		}
+
 	}()
 
 	if config.EnableNews {
@@ -984,6 +1078,39 @@ func (a *App) domReady(ctx context.Context) {
 			a.setCronEntry("ConceptFundFlowFetchAndSave", idConceptFundFlow)
 		}
 	}()
+	// 历史数据清理（每日凌晨2:30低峰执行一次，启动后也会补跑一次，详见 cleanHistoricalData）
+	go func() {
+		idHistoryClean, err := a.cron.AddFunc("0 30 2 * * *", func() {
+			cleanHistoricalData()
+		})
+		if err != nil {
+			logger.SugaredLogger.Errorf("AddFunc HistoricalDataCleanup error:%s", err.Error())
+		} else {
+			a.setCronEntry("HistoricalDataCleanup", idHistoryClean)
+		}
+	}()
+	// 启动后补跑一次历史数据清理：桌面应用夜里通常没运行，只靠凌晨 cron 会导致清理长期不执行
+	// （实测 concept_fund_flow 因此积累了 180 万行、跨 3 个月）。延迟 1 分钟避开启动时的加载高峰。
+	go func() {
+		time.Sleep(time.Minute)
+		cleanHistoricalData()
+	}()
+	// 分笔成交缓存清理（每日凌晨3点，保留最近1天）：该表高频写入，仅在启动时清理一次会导致
+	// 长时间运行（不重启）时无限膨胀，进而让大表查询/清理持锁变长阻塞其他读写。
+	go func() {
+		idTxClean, err := a.cron.AddFunc("0 0 3 * * *", func() {
+			if err := db.ClearExpiredStockTransactionCache(); err != nil {
+				logger.SugaredLogger.Errorf("ClearExpiredStockTransactionCache error:%s", err.Error())
+			} else {
+				logger.SugaredLogger.Infof("stock_transaction_cache cleanup done (keep last 1 day)")
+			}
+		})
+		if err != nil {
+			logger.SugaredLogger.Errorf("AddFunc StockTransactionCacheClean error:%s", err.Error())
+		} else {
+			a.setCronEntry("StockTransactionCacheClean", idTxClean)
+		}
+	}()
 	//检查新版本
 	go func() {
 		a.CheckUpdate(0)
@@ -1034,6 +1161,25 @@ func (a *App) domReady(ctx context.Context) {
 	}
 	//logger.SugaredLogger.Infof("domReady-cronEntrys:%+v", a.cronEntrys)
 
+}
+
+// cleanHistoricalData 清理历史价值低、只增不减的表：资金流向快照（保留3天）、
+// 快讯与标签、政策新闻、词频/情感分析结果（保留30天）。
+// 这些表由高频采集任务写入，页面与工具只用到最近若干天。
+//
+// 清理只挂在凌晨 cron 上并不可靠：桌面应用夜里通常没有运行，cron 就不会执行，
+// 表会一直膨胀（实测 concept_fund_flow 积累了 180 万行、跨 3 个月）。
+// 因此启动后也会补跑一次，与凌晨低峰清理形成双保险。
+func cleanHistoricalData() {
+	defer PanicHandler()
+	bk := data.NewBKFundFlowApi().CleanOldData(3)
+	concept := data.NewConceptFundFlowApi().CleanOldData(3)
+	telegraph, links := data.NewMarketNewsApi().CleanOldTelegraph(30)
+	policy := data.NewPolicyNewsApi().CleanOldPolicyNews(30)
+	words, sentiments := data.CleanOldSentimentAnalyzes(30)
+	logger.SugaredLogger.Infof(
+		"历史数据清理完成：bk_fund_flow=%d, concept_fund_flow=%d, telegraph=%d(标签%d), policy_news=%d, word_analyzes=%d, sentiment_result_analyzes=%d",
+		bk, concept, telegraph, links, policy, words, sentiments)
 }
 
 func syncAllStockInfo(ctx context.Context) {
@@ -1948,6 +2094,7 @@ func addStockFollowData(follow data.FollowedStock, stockData *data.StockInfo) {
 // shutdown is called at application termination
 func (a *App) shutdown(ctx context.Context) {
 	defer PanicHandler()
+	logger.SugaredLogger.Info("application shutdown 回调触发（正常退出）")
 	// 停止飞书应用机器人长连接
 	a.stopFeishuBotInternal()
 	// 记录当前窗口大小，供下次启动时还原
@@ -2053,6 +2200,16 @@ func (a *App) SendDingDingMessageByType(message string, stockCode string, msgTyp
 	})
 
 	return data.NewDingDingAPI().SendDingDingMessage(message)
+}
+
+// TestDingDingNotice 使用设置页当前填写的钉钉机器人地址发送测试通知（不读取数据库配置）
+func (a *App) TestDingDingNotice(message string, dingRobot string) string {
+	return data.NewDingDingAPI().SendDingDingMessageByRobot(message, dingRobot)
+}
+
+// TestFeishuNotice 使用设置页当前填写的飞书机器人地址与签名密钥发送测试通知（不读取数据库配置）
+func (a *App) TestFeishuNotice(message string, feishuRobot string, feishuSecret string) string {
+	return data.NewFeishuAPI().SendFeishuMessageByRobot(message, feishuRobot, feishuSecret)
 }
 
 // SendFeishuMessage 发送飞书自定义机器人消息（带 5 分钟去重缓存）
@@ -2821,6 +2978,102 @@ func (a *App) GetStockKLinePageWithFallback(stockCode, stockName string, klt str
 	return data.FetchKLineWithFallback(stockCode, stockName, klt, limit, end, adjustFlag)
 }
 
+// ===== 币安 USDT-M 永续合约 =====
+
+// GetBinanceFuturesSymbols 获取全部币安 USDT-M 永续合约基础信息（品种列表）。
+func (a *App) GetBinanceFuturesSymbols() []data.BinanceSymbolInfo {
+	return data.BinanceSymbolList()
+}
+
+// GetBinanceFuturesTicker 获取永续合约 24h 行情；symbols 为英文逗号分隔的合约标识，为空时返回全部。
+func (a *App) GetBinanceFuturesTicker(symbols string) []data.BinanceTicker24h {
+	api := data.NewBinanceFuturesApi()
+	list := strings.TrimSpace(symbols)
+	if list == "" {
+		return api.GetAllTickers()
+	}
+	out := make([]data.BinanceTicker24h, 0)
+	for _, s := range strings.Split(list, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if t := api.GetTicker24h(s); t != nil {
+			out = append(out, *t)
+		}
+	}
+	return out
+}
+
+// GetBinanceFuturesPremium 获取全部合约的标记价与当期资金费率（榜单排序用）。
+func (a *App) GetBinanceFuturesPremium() []data.BinancePremiumIndex {
+	return data.NewBinanceFuturesApi().GetAllPremiumIndex()
+}
+
+// GetBinanceFuturesDerivatives 获取单个合约的永续衍生指标（资金费率/未平仓量/多空比 + 历史序列）。
+func (a *App) GetBinanceFuturesDerivatives(symbol, period string, limit int) *data.BinanceDerivativesBundle {
+	return data.NewBinanceFuturesApi().GetDerivatives(symbol, period, limit)
+}
+
+// GetBinanceFundingRateHistory 获取资金费率历史。
+func (a *App) GetBinanceFundingRateHistory(symbol string, limit int) []data.BinanceFundingRate {
+	return data.NewBinanceFuturesApi().GetFundingRateHistory(symbol, limit)
+}
+
+// GetBinanceOpenInterestHist 获取未平仓量历史序列。
+func (a *App) GetBinanceOpenInterestHist(symbol, period string, limit int) []data.BinanceOpenInterestHist {
+	return data.NewBinanceFuturesApi().GetOpenInterestHist(symbol, period, limit)
+}
+
+// GetBinanceLongShortRatio 获取多空比历史；ratioType 取 global（全局账户比）/ topPosition（大户持仓比）/ taker（主动买卖比）。
+func (a *App) GetBinanceLongShortRatio(symbol, period, ratioType string, limit int) []data.BinanceLongShortRatio {
+	api := data.NewBinanceFuturesApi()
+	switch ratioType {
+	case "topPosition", "top":
+		return api.GetTopLongShortPositionRatio(symbol, period, limit)
+	case "taker":
+		return api.GetTakerLongShortRatio(symbol, period, limit)
+	default:
+		return api.GetLongShortAccountRatio(symbol, period, limit)
+	}
+}
+
+// GetBitgetFuturesSymbols 获取全部 Bitget 美股永续合约基础信息（已过滤为非股票 RWA 之外的品种）。
+func (a *App) GetBitgetFuturesSymbols() []data.BitgetSymbolInfo {
+	return data.BitgetSymbolList()
+}
+
+// GetBitgetFuturesTicker 获取美股永续合约 24h 行情；symbols 为英文逗号分隔的合约标识，为空时返回全部。
+func (a *App) GetBitgetFuturesTicker(symbols string) []data.BitgetTicker {
+	api := data.NewBitgetFuturesApi()
+	list := strings.TrimSpace(symbols)
+	if list == "" {
+		return api.GetAllTickers()
+	}
+	out := make([]data.BitgetTicker, 0)
+	for _, s := range strings.Split(list, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if t := api.GetTicker(s); t != nil {
+			out = append(out, *t)
+		}
+	}
+	return out
+}
+
+// GetBitgetFuturesDerivatives 获取单个美股永续合约的衍生指标（资金费率/标记价基差/当前未平仓量）。
+// 注意：Bitget 美股永续不提供多空持仓比，且无 OI 历史端点，故只有当前值。
+func (a *App) GetBitgetFuturesDerivatives(symbol string) *data.BitgetDerivativesBundle {
+	return data.NewBitgetFuturesApi().GetDerivatives(symbol)
+}
+
+// GetBitgetFundingRateHistory 获取美股永续合约资金费率历史（按时间升序）。
+func (a *App) GetBitgetFundingRateHistory(symbol string, limit int) []data.BitgetFundingRate {
+	return data.NewBitgetFuturesApi().GetFundingRateHistory(symbol, limit)
+}
+
 // GetFuturesPositionTrend 获取股指期货（IF/IH/IC/IM）前20会员多空单持仓趋势，
 // 用于与大盘指数K线走势对照分析。variety 支持 IF/if/IF主力/沪深300 等写法；
 // contract 为空时自动定位主力合约；days 为最近交易日数量（默认 60，上限 500）。
@@ -2922,11 +3175,34 @@ func (a *App) GetTelegraphList(source string) *[]*models.Telegraph {
 	return telegraphs
 }
 
+// 快讯抓取节流：市场快讯页每 10 秒刷新一次，若每次刷新都重新抓取三个数据源，
+// 会形成约 54 次/分钟的网络请求与大量写库操作（去重 COUNT + 插入 + 标签 FirstOrCreate），
+// 在 SQLite 单写者模型下直接拖慢页面自身查询。这里限制最短抓取间隔，
+// 期间页面刷新只重新读库返回；抓取本身由后台 cron（app.go 中的新闻推送任务）继续保证。
+const telegraphRefetchInterval = 60 * time.Second
+
+var (
+	telegraphRefetchMu   sync.Mutex
+	telegraphRefetchTime time.Time
+)
+
+// telegraphShouldRefetch 判断距上次抓取是否已超过最小间隔，并记录本次抓取时间
+func telegraphShouldRefetch() bool {
+	telegraphRefetchMu.Lock()
+	defer telegraphRefetchMu.Unlock()
+	if !telegraphRefetchTime.IsZero() && time.Since(telegraphRefetchTime) < telegraphRefetchInterval {
+		return false
+	}
+	telegraphRefetchTime = time.Now()
+	return true
+}
+
 func (a *App) ReFleshTelegraphList(source string) *[]*models.Telegraph {
-	//data.NewMarketNewsApi().GetNewTelegraph(30)
-	go data.NewMarketNewsApi().TelegraphList(30)
-	go data.NewMarketNewsApi().GetSinaNews(30)
-	go data.NewMarketNewsApi().TradingViewNews()
+	if telegraphShouldRefetch() {
+		go data.NewMarketNewsApi().TelegraphList(30)
+		go data.NewMarketNewsApi().GetSinaNews(30)
+		go data.NewMarketNewsApi().TradingViewNews()
+	}
 	telegraphs := data.NewMarketNewsApi().GetTelegraphList(source)
 	return telegraphs
 }
@@ -2975,16 +3251,32 @@ func (a *App) GlobalStockIndexesReadable() string {
 	return data.NewMarketNewsApi().GlobalStockIndexesReadable(30)
 }
 
+// summarySession 标识一次进行中的 SummaryStockNews 流式会话。
+// 使用可比较的指针类型，便于会话结束时判断自己是否仍是当前会话，
+// 避免误清后来新会话的取消句柄。
+type summarySession struct {
+	cancel context.CancelFunc
+}
+
 func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int, enableTools bool, think bool, eventName string, historyJSON string, imagesJSON string) {
 	ctx, cancel := context.WithCancel(a.ctx)
 
-	// 保存当前会话的 cancel，用于前端中断
+	// 保存当前会话，用于前端中断；新会话开始时取消旧会话
+	session := &summarySession{cancel: cancel}
 	a.summaryMu.Lock()
-	if a.summaryCancel != nil {
-		a.summaryCancel()
+	if a.summarySession != nil {
+		a.summarySession.cancel()
 	}
-	a.summaryCancel = cancel
+	a.summarySession = session
 	a.summaryMu.Unlock()
+	// 仅当自己仍是当前会话时才清空，防止误清新会话的取消句柄
+	clearSession := func() {
+		a.summaryMu.Lock()
+		if a.summarySession == session {
+			a.summarySession = nil
+		}
+		a.summaryMu.Unlock()
+	}
 
 	// 允许前端自定义事件名，避免不同页面之间的事件冲突
 	if strings.TrimSpace(eventName) == "" {
@@ -3015,22 +3307,170 @@ func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int
 		_ = json.Unmarshal([]byte(imagesJSON), &images)
 	}
 
+	aiClient := data.NewDeepSeekOpenAi(ctx, aiConfigId)
 	var msgs <-chan map[string]any
 	if enableTools {
-		msgs = data.NewDeepSeekOpenAi(ctx, aiConfigId).NewSummaryStockNewsStreamWithTools(question, sysPromptId, a.AiTools, think, history, images)
+		// 临时屏蔽响应较慢的工具（见 data.tempDisabledToolNames），避免拖长 AI 总结等待时间
+		msgs = aiClient.NewSummaryStockNewsStreamWithTools(question, sysPromptId, data.FilterTempDisabledTools(a.AiTools), think, history, images)
 	} else {
-		msgs = data.NewDeepSeekOpenAi(ctx, aiConfigId).NewSummaryStockNewsStream(question, sysPromptId, think, history, images)
+		msgs = aiClient.NewSummaryStockNewsStream(question, sysPromptId, think, history, images)
 	}
 
-	for msg := range msgs {
-		runtime.EventsEmit(a.ctx, eventName, msg)
+	// 无输出看门狗：数据抓取、工具调用或流式输出长时间没有任何消息时强制结束，
+	// 保证前端一定能收到结束事件，避免界面一直停留在“AI分析中”
+	requestTimeout := time.Duration(aiClient.GetTimeout()) * time.Second
+	if requestTimeout <= 0 {
+		requestTimeout = 300 * time.Second
+	}
+	stallTimeout := requestTimeout + 120*time.Second
+	timer := time.NewTimer(stallTimeout)
+	defer timer.Stop()
+
+	// 流式增量合并：模型每秒可能推送数十个 token，逐条 EventsEmit 会产生大量 IPC 调用，
+	// 前端每收到一条消息就要把整篇 markdown 重新解析一次。这里把连续同字段的增量合并，
+	// 每 streamFlushInterval 统一发送一次，内容顺序与逐条发送时完全一致。
+	const streamFlushInterval = 100 * time.Millisecond
+
+	// streamDelta 判断消息是否为可合并的纯文本增量，是则返回字段名与增量文本
+	streamDelta := func(msg any) (string, string, bool) {
+		m, ok := msg.(map[string]any)
+		if !ok {
+			return "", "", false
+		}
+		if code, ok := m["code"].(int); !ok || code != 1 {
+			return "", "", false
+		}
+		if extra, _ := m["extraContent"].(string); extra != "" {
+			return "", "", false
+		}
+		field, text := "", ""
+		if c, _ := m["content"].(string); c != "" {
+			field, text = "content", c
+		}
+		if r, _ := m["reasoning_content"].(string); r != "" {
+			if field != "" {
+				return "", "", false // 同时携带两种内容，不合并，按原样发送
+			}
+			field, text = "reasoning_content", r
+		}
+		if field == "" {
+			return "", "", false
+		}
+		return field, text, true
 	}
 
-	a.summaryMu.Lock()
-	a.summaryCancel = nil
-	a.summaryMu.Unlock()
+	flushTimer := time.NewTimer(streamFlushInterval)
+	if !flushTimer.Stop() {
+		<-flushTimer.C
+	}
+	defer flushTimer.Stop()
+	flushTimerRunning := false
+	startFlushTimer := func() {
+		if flushTimerRunning {
+			return
+		}
+		flushTimer.Reset(streamFlushInterval)
+		flushTimerRunning = true
+	}
+	stopFlushTimer := func() {
+		if !flushTimerRunning {
+			return
+		}
+		if !flushTimer.Stop() {
+			select {
+			case <-flushTimer.C:
+			default:
+			}
+		}
+		flushTimerRunning = false
+	}
 
-	runtime.EventsEmit(a.ctx, eventName, "DONE")
+	var (
+		pendingMsg   map[string]any
+		pendingField string
+		pendingText  strings.Builder
+	)
+	// flushStream 把缓冲区里已合并的增量发给前端；无缓冲内容时不做任何事
+	flushStream := func() {
+		stopFlushTimer()
+		if pendingMsg == nil {
+			return
+		}
+		pendingMsg[pendingField] = pendingText.String()
+		runtime.EventsEmit(a.ctx, eventName, pendingMsg)
+		pendingMsg = nil
+		pendingField = ""
+		pendingText.Reset()
+	}
+
+	for {
+		select {
+		case msg, ok := <-msgs:
+			// 当前会话已被新的请求或手动中断取代：丢弃残余消息（避免污染新会话的输出），
+			// 发送 CANCELLED 而非 DONE，避免前端把刚开始的新分析误标为“分析完成”
+			if ctx.Err() != nil {
+				if ok {
+					go func() {
+						for range msgs {
+						}
+					}()
+				}
+				clearSession()
+				runtime.EventsEmit(a.ctx, eventName, "CANCELLED")
+				return
+			}
+			if !ok {
+				// 流正常结束：先把缓冲区里剩余的内容发出，再通知结束
+				flushStream()
+				clearSession()
+				runtime.EventsEmit(a.ctx, eventName, "DONE")
+				return
+			}
+			timer.Reset(stallTimeout)
+			if field, text, isDelta := streamDelta(msg); isDelta {
+				if field != pendingField {
+					flushStream()
+					pendingField = field
+				}
+				pendingMsg = msg
+				pendingText.WriteString(text)
+				startFlushTimer()
+			} else {
+				// 非增量消息（工具调用日志、错误等）：先落地缓冲区，保证前端拼接顺序不变
+				flushStream()
+				runtime.EventsEmit(a.ctx, eventName, msg)
+			}
+		case <-flushTimer.C:
+			flushTimerRunning = false
+			flushStream()
+		case <-timer.C:
+			// 长时间无输出，强制结束，防止前端永远停在“AI分析中”
+			logger.SugaredLogger.Errorf("SummaryStockNews no message for %s, force finishing", stallTimeout)
+			flushStream()
+			cancel()
+			go func() {
+				for range msgs {
+				}
+			}()
+			runtime.EventsEmit(a.ctx, eventName, map[string]any{
+				"code":     0,
+				"question": question,
+				"content":  "\n\n---\n**AI 分析超时或长时间无响应，已强制结束。**请重试，或检查网络/代理/模型服务配置。",
+			})
+			clearSession()
+			runtime.EventsEmit(a.ctx, eventName, "DONE")
+			return
+		case <-ctx.Done():
+			// 被新请求或前端手动中断取代，静默结束
+			go func() {
+				for range msgs {
+				}
+			}()
+			clearSession()
+			runtime.EventsEmit(a.ctx, eventName, "CANCELLED")
+			return
+		}
+	}
 }
 func (a *App) GetIndustryRank(sort string, cnt int) []any {
 	res := data.NewMarketNewsApi().GetIndustryRank(sort, cnt)
@@ -3373,6 +3813,41 @@ func (a *App) InitCronTasks() {
 			logger.SugaredLogger.Info("已自动创建盘前策略定时任务")
 		}
 	}
+	if !cronApi.ExistsByTaskType("recommend_backtest") {
+		// 为 3/5/10/20/30 交易日五种持有期各建一个每交易日自动执行的回测任务：
+		// 时间依次错开 10 分钟——回测内部按持有期串行执行（见 backtestRunLock），
+		// 同时触发时后到的那个会被跳过，错开可保证每个周期当天都能跑完。
+		periods := []int{3, 5, 10, 20, 30}
+		cronExprs := []string{
+			"0 30 18 * * 1-5", // 3 日：18:30
+			"0 40 18 * * 1-5", // 5 日：18:40
+			"0 50 18 * * 1-5", // 10 日：18:50
+			"0 0 19 * * 1-5",  // 20 日：19:00
+			"0 10 19 * * 1-5", // 30 日：19:10
+		}
+		for i, days := range periods {
+			name := fmt.Sprintf("推荐回测(%d日)", days)
+			if cronApi.ExistsByName(name) {
+				continue
+			}
+			task := &models.CronTask{
+				Name:     name,
+				CronExpr: cronExprs[i],
+				TaskType: "recommend_backtest",
+				Enable:   true,
+				Status:   "active",
+				Params:   fmt.Sprintf(`{"periodDays":%d}`, days),
+				Description: fmt.Sprintf("收盘后自动核算 AI 历史推荐在推荐日之后 %d 个交易日的持有期收益及其相对沪深300 的超额收益，"+
+					"写入「推荐回测统计」（页面上按持有期切换查看）；已回测记录自动跳过，重复执行不会产生重复数据", days),
+			}
+			err := cronApi.Create(task)
+			if err != nil {
+				logger.SugaredLogger.Errorf("自动创建推荐回测任务失败：%v", err)
+			} else {
+				logger.SugaredLogger.Infof("已自动创建推荐回测定时任务：%s", name)
+			}
+		}
+	}
 	tasks := cronApi.GetAll()
 	if len(tasks) == 0 {
 		return
@@ -3392,15 +3867,49 @@ func (a *App) InitCronTasks() {
 		}
 		a.setCronEntry(convertor.ToString(taskCopy.ID)+"_"+taskCopy.Name, entryID)
 	}
+	a.catchUpRecommendBacktest(cronApi)
+}
+
+// recommendBacktestCatchUpHours 推荐回测启动补偿阈值：距上次回测超过该时长则开机补跑一次。
+// 取 20 小时（<24 小时）既保证"每天至少执行一次"，又避免同一天多次启动重复执行。
+const recommendBacktestCatchUpHours = 20
+
+// catchUpRecommendBacktest 推荐回测启动补偿：定时任务只有在应用运行到触发时刻才会执行，
+// 用户收盘后未开机就会整天漏跑。对每个超过阈值未执行的持有期任务依次后台补跑；
+// 回测对"推荐 + 持有期"只核算一次（已回测记录自动跳过），故补跑不会产生重复数据。
+func (a *App) catchUpRecommendBacktest(cronApi *agent.CronTaskApi) {
+	var stale []models.CronTask
+	for _, t := range cronApi.GetAll() {
+		if t.TaskType != "recommend_backtest" {
+			continue
+		}
+		if t.LastRunAt != nil && time.Since(*t.LastRunAt) < recommendBacktestCatchUpHours*time.Hour {
+			continue
+		}
+		stale = append(stale, t)
+	}
+	if len(stale) == 0 {
+		return
+	}
+	logger.SugaredLogger.Infof("推荐回测任务超过 %d 小时未执行（%d 个），启动后后台依次补跑", recommendBacktestCatchUpHours, len(stale))
+	// 串行执行：回测内部为串行锁，并发触发会被跳过，故在一个 goroutine 中依次补跑
+	go func(list []models.CronTask) {
+		defer PanicHandler()
+		for i := range list {
+			if err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &list[i]); err != nil {
+				logger.SugaredLogger.Errorf("推荐回测启动补偿执行失败：%v %s", err, list[i].Name)
+			}
+		}
+	}(stale)
 }
 
 // AbortSummaryStockNews 取消当前进行中的 SummaryStockNews 流式回答
 func (a *App) AbortSummaryStockNews() {
 	a.summaryMu.Lock()
 	defer a.summaryMu.Unlock()
-	if a.summaryCancel != nil {
-		a.summaryCancel()
-		a.summaryCancel = nil
+	if a.summarySession != nil {
+		a.summarySession.cancel()
+		a.summarySession = nil
 	}
 }
 
@@ -4171,19 +4680,64 @@ func (a *App) RunRecommendBacktest(periodDays int) (string, error) {
 	return agent.NewRecommendBacktestApi().RunBacktest(periodDays)
 }
 
-// ListRecommendBacktest 分页查询回测结果
-func (a *App) ListRecommendBacktest(page, pageSize int) (agent.BacktestPageData, error) {
-	return agent.NewRecommendBacktestApi().ListBacktest(page, pageSize)
+// ListRecommendBacktest 分页查询回测结果（periodDays<=0 表示不限持有期）
+func (a *App) ListRecommendBacktest(page, pageSize, periodDays int) (agent.BacktestPageData, error) {
+	return agent.NewRecommendBacktestApi().ListBacktest(page, pageSize, periodDays)
 }
 
-// ListRecommendBacktestByPrompt 按提示词过滤分页查询回测结果
-func (a *App) ListRecommendBacktestByPrompt(page, pageSize int, prompt, promptType string) (agent.BacktestPageData, error) {
-	return agent.NewRecommendBacktestApi().ListBacktestByPrompt(page, pageSize, prompt, promptType)
+// ListRecommendBacktestByPrompt 按提示词过滤分页查询回测结果（periodDays<=0 表示不限持有期）
+func (a *App) ListRecommendBacktestByPrompt(page, pageSize int, prompt, promptType string, periodDays int) (agent.BacktestPageData, error) {
+	return agent.NewRecommendBacktestApi().ListBacktestByPrompt(page, pageSize, prompt, promptType, periodDays)
 }
 
-// GetRecommendBacktestStats 获取回测聚合统计
-func (a *App) GetRecommendBacktestStats() (*agent.BacktestStats, error) {
-	return agent.NewRecommendBacktestApi().BacktestStats()
+// GetRecommendBacktestStats 获取回测聚合统计（periodDays<=0 表示混合全部持有期）
+func (a *App) GetRecommendBacktestStats(periodDays int) (*agent.BacktestStats, error) {
+	return agent.NewRecommendBacktestApi().BacktestStats(periodDays)
+}
+
+// GetPromptTemplateBacktestStats 获取按提示词模板聚合的回测统计（不含净值曲线，按评分降序）
+func (a *App) GetPromptTemplateBacktestStats(periodDays int) ([]*agent.TemplateStat, error) {
+	return agent.NewRecommendBacktestApi().TemplateBacktestStats(periodDays)
+}
+
+// GetPromptTemplateBacktestDetail 获取单个提示词模板的回测统计（含净值曲线）
+func (a *App) GetPromptTemplateBacktestDetail(templateId, periodDays int) (*agent.TemplateStat, error) {
+	return agent.NewRecommendBacktestApi().TemplateBacktestDetail(templateId, periodDays)
+}
+
+// ListRecommendBacktestByTemplate 按提示词模板 ID 过滤分页查询回测结果（periodDays<=0 表示不限持有期）
+func (a *App) ListRecommendBacktestByTemplate(page, pageSize, templateId, periodDays int) (agent.BacktestPageData, error) {
+	return agent.NewRecommendBacktestApi().ListBacktestByTemplate(page, pageSize, templateId, periodDays)
+}
+
+// ListRecommendBacktestBySkill 按技能 ID（目录名）过滤分页查询回测结果（periodDays<=0 表示不限持有期）
+func (a *App) ListRecommendBacktestBySkill(page, pageSize int, skillId string, periodDays int) (agent.BacktestPageData, error) {
+	return agent.NewRecommendBacktestApi().ListBacktestBySkill(page, pageSize, skillId, periodDays)
+}
+
+// CreatePromptBacktestTask 创建并启动提示词模板主动回测任务（异步执行，进度经 promptBacktestProgress 事件推送）
+func (a *App) CreatePromptBacktestTask(params agent.PromptBacktestCreateParams) (*models.PromptBacktestTask, error) {
+	return agent.NewPromptBacktestApi().CreatePromptBacktestTask(a.ctx, params)
+}
+
+// GetPromptBacktestTaskList 获取提示词模板回测任务列表
+func (a *App) GetPromptBacktestTaskList() ([]*models.PromptBacktestTask, error) {
+	return agent.NewPromptBacktestApi().GetPromptBacktestTaskList()
+}
+
+// GetPromptBacktestTaskDetail 获取回测任务详情（任务 + 各模板统计含净值曲线与 Jaccard 稳定性）
+func (a *App) GetPromptBacktestTaskDetail(taskId uint) (*agent.PromptBacktestTaskDetail, error) {
+	return agent.NewPromptBacktestApi().GetPromptBacktestTaskDetail(taskId)
+}
+
+// GetPromptBacktestPicks 获取回测任务选股明细分页（templateId>0 时按模板过滤）
+func (a *App) GetPromptBacktestPicks(taskId uint, templateId int, page, pageSize int) (agent.PromptBacktestPickPageData, error) {
+	return agent.NewPromptBacktestApi().GetPromptBacktestPicks(taskId, templateId, page, pageSize)
+}
+
+// DeletePromptBacktestTask 删除回测任务及其全部选股记录
+func (a *App) DeletePromptBacktestTask(taskId uint) error {
+	return agent.NewPromptBacktestApi().DeletePromptBacktestTask(taskId)
 }
 
 func (a *App) CreateMCPServer(server *models.MCPServer) string {
@@ -4342,19 +4896,12 @@ const (
 	skillMdDisabledName = "SKILL.md.disabled"
 )
 
-// skillsDir 返回文件系统技能目录路径（与 agent.deepAgentRootDir 保持一致）。
+// skillsDir 返回文件系统技能目录路径（与 agent.RootDir 保持一致）。
 //
-// 使用可执行文件所在目录而非 os.Getwd()，确保无论从哪个工作目录启动 go-stock，
-// skills 目录都固定在程序所在目录下；可执行文件路径获取失败时降级到当前工作目录。
+// 统一走 agent.RootDir：Windows/Linux 即程序所在目录（与旧行为一致，老用户零变化），
+// macOS 双击 .app 时为应用支持目录，技能不再随 .app 覆盖安装被清除。
 func skillsDir() string {
-	if exePath, err := os.Executable(); err == nil && exePath != "" {
-		return filepath.Join(filepath.Dir(exePath), "skills")
-	}
-	wd, err := os.Getwd()
-	if err != nil || wd == "" {
-		wd = "."
-	}
-	return filepath.Join(wd, "skills")
+	return filepath.Join(agent.RootDir(), "skills")
 }
 
 // ImportSkillPackage

@@ -26,12 +26,13 @@ import {
   SettingsOutline, ServerOutline, ScaleOutline, Skull, SkullOutline, SkullSharp,
   SparklesOutline, FlashOutline, Star,
   StarOutline,
-  StatsChartOutline,
+  StatsChartOutline, SwapHorizontalOutline,
   Wallet, WarningOutline, TimeOutline, SearchOutline, BookmarkOutline,
 } from '@vicons/ionicons5'
 import {AnalyzeSentiment, GetConfig, GetEffectiveSponsorVip, GetGroupList, GetVersionInfo, IsTradingTime, IsHKTradingTime, IsUSTradingTime} from "../wailsjs/go/main/App";
 import FloatingAiAssistant from "./components/FloatingAiAssistant.vue";
 import FloatingAgentAssistant from "./components/FloatingAgentAssistant.vue";
+import SignalMonitorPanel from "./components/SignalMonitorPanel.vue";
 import {Dragon, Fire, FirefoxBrowser, Gripfire, Robot} from "@vicons/fa";
 import {Prompt, ReportAnalytics, ReportMoney, ReportSearch, TrendingUp} from "@vicons/tabler";
 import {LocalFireDepartmentRound} from "@vicons/material";
@@ -47,6 +48,8 @@ const loadingMsg = ref("加载数据中...")
 const enableNews = ref(false)
 const contentStyle = ref("")
 const enableFund = ref(false)
+// 「合约行情」菜单默认显示，由设置页「启用合约行情」开关（enableContracts）控制显隐
+const enableContracts = ref(true)
 const enableAgent = ref(false)
 const enableDarkTheme = ref(darkTheme)
 const content = ref('未经授权,禁止商业目的!\n\n数据来源于网络,仅供参考;投资有风险,入市需谨慎')
@@ -157,8 +160,10 @@ function updateMarketStatus() {
   })
 }
 
-/** 用于功能权限：仅在赞助有效期内为解密等级，否则为 0（与 EffectiveSponsorVipLevel 一致） */
+/** 用于功能权限：仅在赞助有效期内为解密等级，否则为 0（与 EffectiveSponsorVipStatus 一致） */
 const vipLevel = ref(0)
+/** 未生效原因，用于向用户解释为什么 VIP2 权益仍被拦截（如"尚未生效/已到期"） */
+const vipInactiveReason = ref('')
 let discreteMessage = null
 function getDiscreteMessage() {
   if (!discreteMessage) {
@@ -176,14 +181,20 @@ async function refreshEffectiveVip() {
     const active = !!r?.active
     const lvl = Number(r?.vipLevel ?? 0)
     vipLevel.value = active && !Number.isNaN(lvl) ? lvl : 0
+    vipInactiveReason.value = active ? '' : String(r?.reason ?? '')
   } catch (_) {
     vipLevel.value = 0
+    vipInactiveReason.value = ''
   }
 }
 async function handleKlineAnalysisClick() {
   await refreshEffectiveVip()
   if (vipLevel.value < 2) {
-    getDiscreteMessage().warning('K线分析功能需要 VIP2 及以上赞助用户才能使用，请升级后体验')
+    // 有赞助码但未生效时给出具体原因（如尚未生效 / 已到期 / 字段异常），
+    // 避免"关于页显示 VIP2，这里却只说需要升级"的认知冲突
+    getDiscreteMessage().warning(vipInactiveReason.value
+      ? `K线分析需要 VIP2 及以上有效赞助：${vipInactiveReason.value}`
+      : 'K线分析功能需要 VIP2 及以上赞助用户才能使用，请升级后体验')
     return
   }
   activeKey.value = 'klineAnalysis'
@@ -668,6 +679,22 @@ const menuOptions = ref([
         h(
             RouterLink,
             {
+              to: {name: 'contracts'},
+              onClick: () => {
+                activeKey.value = 'contracts'
+              },
+            },
+            {default: () => '合约行情'}
+        ),
+    show: enableContracts.value,
+    key: 'contracts',
+    icon: renderIcon(SwapHorizontalOutline),
+  },
+  {
+    label: () =>
+        h(
+            RouterLink,
+            {
               to: {
                 name: 'fund',
                 query: {
@@ -771,6 +798,42 @@ const menuOptions = ref([
             ),
         key: 'morningStrategy',
         icon: renderIcon(TimeOutline),
+      },
+      {
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  to: {
+                    name: 'promptBacktest',
+                    params: {},
+                  },
+                  onClick: () => {
+                    activeKey.value = 'promptBacktest'
+                  },
+                },
+                {default: () => '提示词回测(beta)'}
+            ),
+        key: 'promptBacktest',
+        icon: renderIcon(StatsChartOutline),
+      },
+      {
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  to: {
+                    name: 'recommendBacktestStats',
+                    params: {},
+                  },
+                  onClick: () => {
+                    activeKey.value = 'recommendBacktestStats'
+                  },
+                },
+                {default: () => '推荐回测统计'}
+            ),
+        key: 'recommendBacktestStats',
+        icon: renderIcon(AnalyticsOutline),
       },
     ]
   },
@@ -1441,6 +1504,7 @@ onBeforeMount(() => {
   GetConfig().then((res) => {
     enableFund.value = res.enableFund
     enableAgent.value = res.enableAgent
+    enableContracts.value = res.enableContracts !== false
 
     menuOptions.value.filter((item) => {
       if (item.key === 'fund') {
@@ -1448,6 +1512,9 @@ onBeforeMount(() => {
       }
       if (item.key === 'agent') {
         item.show = res.enableAgent
+      }
+      if (item.key === 'contracts') {
+        item.show = enableContracts.value
       }
     })
 
@@ -1474,6 +1541,7 @@ onMounted(() => {
     }
     enableFund.value = res.enableFund
     enableAgent.value = res.enableAgent
+    enableContracts.value = res.enableContracts !== false
     const {notification } =createDiscreteApi(["notification"], {
       configProviderProps: {
         theme: enableDarkTheme.value ? darkTheme : lightTheme ,
@@ -1647,6 +1715,7 @@ onMounted(() => {
             >
 <!--              <FloatingAiAssistant />-->
               <FloatingAgentAssistant />
+              <SignalMonitorPanel />
               <n-flex>
                 <n-grid x-gap="12" :cols="1">
                   <n-gi>

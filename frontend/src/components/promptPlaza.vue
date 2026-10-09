@@ -176,6 +176,12 @@ async function loadPrompts() {
   }
 }
 
+// 仅当服务端明确表示凭证失效时才清除登录态；网络异常、服务不可用等临时故障不能清 token。
+function isAuthError(e) {
+  const msg = String((e && e.message) || '')
+  return /(^|\D)(401|403)(\D|$)|未登录|请先登录|登录已过期|登录状态.*(失效|无效)|(token|令牌|凭证).*(无效|失效|过期|非法)/i.test(msg)
+}
+
 async function fetchCurrentUser() {
   try {
     const data = await apiGet('/user/me')
@@ -183,9 +189,11 @@ async function fetchCurrentUser() {
     syncVipInfo()
     checkDeviceLimit()
   } catch (e) {
-    token.value = ''
-    localStorage.removeItem('promptPlazaToken')
     currentUser.value = null
+    if (isAuthError(e)) {
+      token.value = ''
+      localStorage.removeItem('promptPlazaToken')
+    }
   }
 }
 
@@ -271,6 +279,11 @@ async function syncVipInfo() {
     }
   } catch (e) {
     console.warn('同步VIP信息失败', e)
+    // 不再静默吞错：VIP 用户看不到失败原因（如赞助码被其他账号使用/验证失败），
+    // 会误以为"本地是VIP但广场权益丢失"，必须明确提示
+    if (body.sponsorCode) {
+      message.warning('VIP权益同步失败：' + (e.message || '网络异常，请稍后重试'))
+    }
   }
 }
 

@@ -165,8 +165,14 @@
                             <span>思考中...</span>
                           </div>
                           <div class="msg-bubble-actions">
-                            <div v-if="group.assistantMsg.modelName || group.assistantMsg.time" class="msg-meta-row-assistant">
+                            <div v-if="group.assistantMsg.modelName || group.assistantMsg.time || group.assistantMsg.stats" class="msg-meta-row-assistant">
                               <span v-if="group.assistantMsg.modelName" class="msg-model-name" :title="group.assistantMsg.modelName">{{ group.assistantMsg.modelName }}</span>
+                              <span v-if="group.assistantMsg.stats" class="msg-turn-stats"
+                                    :title="`本轮消耗：输入 ${group.assistantMsg.stats.inputTokens.toLocaleString()} tokens，输出 ${group.assistantMsg.stats.outputTokens.toLocaleString()} tokens`">
+                                📊 {{ formatTokens(group.assistantMsg.stats.inputTokens) }} 入 / {{ formatTokens(group.assistantMsg.stats.outputTokens) }} 出
+                                / {{ formatTokens(group.assistantMsg.stats.inputTokens + group.assistantMsg.stats.outputTokens) }} 总 tokens
+                                · {{ group.assistantMsg.stats.tools }} 次工具 · {{ group.assistantMsg.stats.duration }}
+                              </span>
                               <span v-if="group.assistantMsg.time" class="msg-time">{{ group.assistantMsg.time }}</span>
                             </div>
                             <NButton quaternary size="tiny" class="msg-toggle-btn" @click="toggleGroup(groupIndex)">
@@ -432,23 +438,19 @@
     :title="(klineName || klineCode || '') + ' — 多周期K线'"
     preset="card"
     :z-index="10010"
-    style="width: min(1100px, 96vw); max-width: 96vw; box-sizing: border-box"
-    :content-style="{
-      maxHeight: 'min(85vh, 820px)',
-      overflowY: 'auto',
-      overflowX: 'hidden',
-      minWidth: 0,
-      boxSizing: 'border-box',
-    }"
+    :style="KLINE_MODAL_STYLE"
+    :content-style="KLINE_MODAL_CONTENT_STYLE"
   >
-    <StockLightweightKlineChart
-      v-if="klineModalShow"
-      :key="'agent-kline-' + klineCode"
-      :code="klineCode"
-      :stock-name="klineName"
-      :dark-theme="darkTheme"
-      :chart-height="500"
-    />
+    <div ref="klineWrapRef">
+      <StockLightweightKlineChart
+        v-if="klineModalShow"
+        :key="'agent-kline-' + klineCode"
+        :code="klineCode"
+        :stock-name="klineName"
+        :dark-theme="darkTheme"
+        :chart-height="klineChartHeight"
+      />
+    </div>
   </NModal>
 
   <!-- 👎 反馈理由弹窗：采集纠正原因，供画像学习"需规避项/偏好格式" -->
@@ -521,6 +523,7 @@ import { MdPreview } from 'md-editor-v3'
 import 'md-editor-v3/lib/preview.css'
 import html2canvas from 'html2canvas'
 import StockLightweightKlineChart from './StockLightweightKlineChart.vue'
+import { KLINE_MODAL_CONTENT_STYLE, KLINE_MODAL_STYLE, useKlineModalFit } from './kline/useKlineModalFit'
 
 const STORAGE_KEY_MODEL_ID = 'go-stock-agent-last-model-id'
 const STORAGE_KEY_SYS_PROMPT_ID = 'go-stock-agent-last-sys-prompt-id'
@@ -797,14 +800,24 @@ function showHint(text) {
   hintTimer = setTimeout(() => { hintVisible.value = false }, 3000)
 }
 const vipLevel = ref(0)
-const vipLoaded = ref(false)
-const vipLoading = ref(false)
+/** 赞助码未生效原因，用于向用户解释为什么 VIP2 权益仍被拦截 */
+const vipReason = ref('')
+/** 在途的 VIP 校验请求：并发调用共享同一个 Promise，避免其中一次提前返回读到 vipLevel=0 */
+let vipInflight = null
 const isAborted = ref(false)
 const expandedGroups = ref(new Set())
 const reasoningExpandedMap = ref({})
 
 const hasBackgroundTask = computed(() => isStreamLoad.value && sentFromFloating.value && !panelVisible.value)
 const AGENT_EVENT = 'agent-message'
+
+// formatTokens 大数值缩写为 k（如 1,234 → 1.2k，12,345 → 12.3k），提升可读性；
+// 悬停 title 仍展示精确值。
+function formatTokens(n) {
+  if (n == null) return '0'
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+  return String(n)
+}
 
 const messageGroups = computed(() => {
   const groups = []
@@ -912,6 +925,17 @@ const klineCode = ref('')
 const klineName = ref('')
 /** 自选股票 名称 → 内部代码 映射，用于 AI 输出中识别股票名称 */
 const followListNameMap = ref(new Map())
+
+// K 线弹窗尺寸与图表高度自适应：与全站其他 K 线弹窗统一
+const klineWrapRef = ref(null)
+const { chartHeight: klineChartHeight, attach: attachKlineFit, detach: detachKlineFit } = useKlineModalFit(klineWrapRef)
+watch(klineModalShow, (v) => {
+  if (v) {
+    attachKlineFit()
+    return
+  }
+  detachKlineFit()
+})
 
 // 匹配股票代码：带显式前缀/后缀的代码（高置信度）+ 6位 A 股代码（首位 6/0/3/8/9）
 // 注意：\d{6}\.(?:SH|SZ|BJ) 必须排在 [60389]\d{5} 之前，否则会先匹配纯数字部分
@@ -1496,18 +1520,24 @@ async function ensureVipInfo() {
   // 注意：不能缓存结果。改用 GetEffectiveSponsorVip（后端每次同步本地解密并判断有效期，无网络 IO），
   // 旧方案读 GetSponsorInfo 依赖启动后台 goroutine（CheckUpdate）异步填充 SponsorInfo，
   // 启动早期预加载会读到空值并把 vipLevel=0 固化，导致 VIP2 用户被误拦。
-  if (vipLoading.value) return
-  vipLoading.value = true
+  // 并发调用必须等待同一个在途请求，不能直接 return：否则调用方会在 vipLevel 仍为 0 时继续判断，误拦 VIP2 用户
+  if (vipInflight) return vipInflight
+  vipInflight = (async () => {
+    try {
+      const res = await GetEffectiveSponsorVip()
+      const lvl = Number(res?.vipLevel ?? 0)
+      const active = !!res?.active
+      vipLevel.value = active && !Number.isNaN(lvl) ? lvl : 0
+      vipReason.value = active ? '' : String(res?.reason ?? '')
+    } catch (_) {
+      vipLevel.value = 0
+      vipReason.value = ''
+    }
+  })()
   try {
-    const res = await GetEffectiveSponsorVip()
-    const lvl = Number(res?.vipLevel ?? 0)
-    const active = res?.active !== false
-    vipLevel.value = active && !Number.isNaN(lvl) ? lvl : 0
-  } catch (_) {
-    vipLevel.value = 0
+    await vipInflight
   } finally {
-    vipLoaded.value = true
-    vipLoading.value = false
+    vipInflight = null
   }
 }
 
@@ -1516,7 +1546,9 @@ async function togglePanel() {
     // 每次打开前重新校验（后端为同步本地解密，微秒级，不影响打开速度）
     await ensureVipInfo()
     if ((vipLevel.value ?? 0) < 2) {
-      message.warning('go-stock AI Agent 助手功能仅对 VIP2 及以上赞助用户开放，请前往关于页面查看赞助方式。')
+      message.warning(vipReason.value
+        ? `go-stock AI Agent 助手需要 VIP2 及以上有效赞助：${vipReason.value}`
+        : 'go-stock AI Agent 助手功能仅对 VIP2 及以上赞助用户开放，请前往关于页面查看赞助方式。')
       return
     }
     openPanel()
@@ -1582,7 +1614,8 @@ function sendMessage() {
     reasoning: '',
     rawReasoning: '',
     steps: [],
-    jsonMarkdown: ''
+    jsonMarkdown: '',
+    stats: null
   })
   inputValue.value = ''
   pendingImages.value = []
@@ -1879,7 +1912,19 @@ function onAgentMessage(msg) {
   if (last && last.role === 'assistant') {
     if (msg?.reasoning_content) {
       const rc = msg.reasoning_content
-      if (rc.startsWith('[STEP]')) {
+      if (rc.startsWith('[STATS]')) {
+        // 本轮统计（后端 sendTurnStats 发送）：提取为结构化字段单独展示，
+        // 不混入 reasoning 折叠区
+        const m = rc.match(/工具调用\s*(\d+)\s*次｜输入\s*(\d+)\s*token｜输出\s*(\d+)\s*token｜耗时\s*([^\n]+)/)
+        if (m) {
+          last.stats = {
+            tools: parseInt(m[1], 10),
+            inputTokens: parseInt(m[2], 10),
+            outputTokens: parseInt(m[3], 10),
+            duration: m[4].trim().replace(/(\d+)(?:\.\d+)?s$/, '$1s'),
+          }
+        }
+      } else if (rc.startsWith('[STEP]')) {
         const stepText = rc.replace(/^\[STEP\]/, '').trim()
         if (stepText) {
           if (!last.steps) last.steps = []
@@ -2630,6 +2675,14 @@ onBeforeUnmount(() => {
   font-size: 13px;
   opacity: 0.75;
   margin-left: 2px;
+}
+.msg-turn-stats {
+  font-size: 12px;
+  opacity: 0.65;
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .msg-meta-row-assistant {
   flex: 1 1 100%;

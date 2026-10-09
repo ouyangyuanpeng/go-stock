@@ -36,6 +36,8 @@ import LongTigerRankList from "./LongTigerRankList.vue";
 import LhbHotMoneyDaily from "./LhbHotMoneyDaily.vue";
 import IndustryResearchReportList from "./IndustryResearchReportList.vue";
 import HotStockList from "./HotStockList.vue";
+import BinanceFuturesList from "./BinanceFuturesList.vue";
+import BitgetFuturesList from "./BitgetFuturesList.vue";
 import HotEvents from "./HotEvents.vue";
 import HotTopics from "./HotTopics.vue";
 import ConceptEventList from "./ConceptEventList.vue";
@@ -73,11 +75,39 @@ const theme = computed(() => {
 // Polymarket 预测市场列表
 const polymarketMarkets = ref([
   {
-    marketSlug: 'will-the-fed-increase-interest-rates-by-25-bps-after-the-september-2026-meeting-649',
-    eventUrl: 'https://polymarket.com/event/fed-decision-in-september-762',
-    title: '美联储将在2026年9月会议后加息25个基点吗？',
-    yesPct: '60%',
-    noPct: '41%'
+    marketSlug: 'will-the-fed-decrease-interest-rates-by-50-bps-after-the-october-2026-meeting-20260617190324029',
+    eventUrl: 'https://polymarket.com/event/fed-decision-in-october-20260617190323537#6qFvCxvE',
+    title: '美联储10月会议后：降息50+个基点',
+    yesPct: '0.15%',
+    noPct: '99.85%'
+  },
+  {
+    marketSlug: 'will-the-fed-decrease-interest-rates-by-25-bps-after-the-october-2026-meeting-20260617190324030',
+    eventUrl: 'https://polymarket.com/event/fed-decision-in-october-20260617190323537#6qFvCxvE',
+    title: '美联储10月会议后：降息25个基点',
+    yesPct: '0.45%',
+    noPct: '99.55%'
+  },
+  {
+    marketSlug: 'will-there-be-no-change-in-fed-interest-rates-after-the-october-2026-meeting-20260617190324031',
+    eventUrl: 'https://polymarket.com/event/fed-decision-in-october-20260617190323537#6qFvCxvE',
+    title: '美联储10月会议后：维持利率不变',
+    yesPct: '83.5%',
+    noPct: '16.5%'
+  },
+  {
+    marketSlug: 'will-the-fed-increase-interest-rates-by-25-bps-after-the-october-2026-meeting-20260617190324032',
+    eventUrl: 'https://polymarket.com/event/fed-decision-in-october-20260617190323537#6qFvCxvE',
+    title: '美联储10月会议后：加息25个基点',
+    yesPct: '15.5%',
+    noPct: '84.5%'
+  },
+  {
+    marketSlug: 'will-the-fed-increase-interest-rates-by-50-bps-after-the-october-2026-meeting-20260617190324033',
+    eventUrl: 'https://polymarket.com/event/fed-decision-in-october-20260617190323537#6qFvCxvE',
+    title: '美联储10月会议后：加息50+个基点',
+    yesPct: '0.35%',
+    noPct: '99.65%'
   },
   {
     marketSlug: 'will-nvidia-be-the-largest-company-in-the-world-by-market-cap-on-december-31-244',
@@ -194,6 +224,7 @@ onBeforeUnmount(() => {
   EventsOff("newTelegraph")
   EventsOff("newSinaNews")
   EventsOff("summaryStockNews")
+  resetSummaryBuffer()
   stopTradingTimers()
   if (tradingCheckInterval.value) {
     clearInterval(tradingCheckInterval.value)
@@ -299,8 +330,12 @@ function industryRank() {
   })
 }
 
+let analysisFailed = false
+
 function reAiSummary() {
+  resetSummaryBuffer()
   aiSummary.value = ""
+  analysisFailed = false
   summaryModal.value = true
   loading.value = true
   analysisStatus.value = "正在连接AI服务..."
@@ -340,21 +375,83 @@ function updateTab(name) {
   nowTab.value = name
 }
 
+// 流式输出缓冲：AI 总结每秒可能推送数十条增量，逐条写入 aiSummary 会让 MdPreview
+// 整篇重新解析 markdown（输出越长越卡），这里按固定间隔合并刷新，内容顺序不变，
+// 渲染次数降到每秒 8 次左右。
+const SUMMARY_FLUSH_INTERVAL = 120
+let summaryBuffer = ""
+let summaryFlushTimer = null
+
+function flushSummaryBuffer() {
+  if (summaryFlushTimer) {
+    clearTimeout(summaryFlushTimer)
+    summaryFlushTimer = null
+  }
+  if (!summaryBuffer) return
+  aiSummary.value += summaryBuffer
+  summaryBuffer = ""
+  scrollToAiResultBottom()
+}
+
+function appendSummaryChunk(text) {
+  summaryBuffer += text
+  if (!summaryFlushTimer) {
+    summaryFlushTimer = setTimeout(flushSummaryBuffer, SUMMARY_FLUSH_INTERVAL)
+  }
+}
+
+function resetSummaryBuffer() {
+  if (summaryFlushTimer) {
+    clearTimeout(summaryFlushTimer)
+    summaryFlushTimer = null
+  }
+  summaryBuffer = ""
+}
+
 EventsOn("summaryStockNews", async (msg) => {
   if (msg === "DONE") {
-    await SaveAIResponseResult("市场资讯", "市场资讯", aiSummary.value, chatId.value, question.value,aiConfigId.value)
+    // 结束前先落盘缓冲区，保证保存/展示的内容完整
+    flushSummaryBuffer()
     loading.value = false
-    analysisStatus.value = "分析完成"
     message.destroyAll()
-    notify.success({
-      title: 'AI分析完成',
-      content: '市场资讯分析已完成',
-      duration: 3000,
-    })
+    if (analysisFailed) {
+      // 分析过程出错（网络/模型服务/超时），不能提示"分析完成"，也不保存错误内容
+      analysisStatus.value = "分析出错"
+      notify.error({
+        title: 'AI分析出错',
+        content: '分析中断或模型服务返回错误，详见分析内容',
+        duration: 5000,
+      })
+    } else {
+      await SaveAIResponseResult("市场资讯", "市场资讯", aiSummary.value, chatId.value, question.value,aiConfigId.value)
+      analysisStatus.value = "分析完成"
+      notify.success({
+        title: 'AI分析完成',
+        content: '市场资讯分析已完成',
+        duration: 3000,
+      })
+    }
     setTimeout(() => {
       analysisStatus.value = ""
     }, 3000)
+  } else if (msg === "CANCELLED") {
+    // 当前请求被新的总结请求或手动中断取代：
+    // 若已有内容则标记中断；内容为空说明新的分析正在进行，静默忽略
+    flushSummaryBuffer()
+    if (aiSummary.value) {
+      loading.value = false
+      analysisStatus.value = "分析已被中断"
+      setTimeout(() => {
+        if (analysisStatus.value === "分析已被中断") {
+          analysisStatus.value = ""
+        }
+      }, 3000)
+    }
   } else {
+    if (msg.code === 0) {
+      // 后端标记的错误消息（网络/HTTP/超时等），不再以"分析完成"收场
+      analysisFailed = true
+    }
     if (msg.chatId) {
       chatId.value = msg.chatId
     }
@@ -368,13 +465,13 @@ EventsOn("summaryStockNews", async (msg) => {
       loading.value = false
     }
     if (msg.content) {
-      aiSummary.value = aiSummary.value + msg.content
+      appendSummaryChunk(msg.content)
     }
     if (msg.reasoning_content) {
-      aiSummary.value = aiSummary.value + msg.reasoning_content
+      appendSummaryChunk(msg.reasoning_content)
     }
     if (msg.extraContent) {
-      aiSummary.value = aiSummary.value + msg.extraContent
+      appendSummaryChunk(msg.extraContent)
     }
     if (msg.model) {
       modelName.value = msg.model
@@ -382,7 +479,6 @@ EventsOn("summaryStockNews", async (msg) => {
     if (msg.time) {
       aiSummaryTime.value = msg.time
     }
-    scrollToAiResultBottom()
   }
 })
 
@@ -795,6 +891,15 @@ function ReFlesh(source) {
           </n-tab-pane>
           <n-tab-pane name="美股" tab="美股">
             <HotStockList :market-type="'11'"/>
+          </n-tab-pane>
+          <n-tab-pane name="永续合约" tab="永续合约">
+            <BinanceFuturesList :dark-theme="darkTheme" market="crypto"/>
+          </n-tab-pane>
+          <n-tab-pane name="美股永续" tab="美股永续">
+            <BinanceFuturesList :dark-theme="darkTheme" market="tradfi"/>
+          </n-tab-pane>
+          <n-tab-pane name="美股合约" tab="美股合约">
+            <BitgetFuturesList :dark-theme="darkTheme"/>
           </n-tab-pane>
           <n-tab-pane name="热门话题" tab="热门话题">
             <n-grid :cols="1" :y-gap="10">

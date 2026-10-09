@@ -110,6 +110,10 @@ export function ClearAgentFeedback() {
   return window['go']['main']['App']['ClearAgentFeedback']();
 }
 
+export function ClearSignalRecords() {
+  return window['go']['main']['App']['ClearSignalRecords']();
+}
+
 export function ClearUserProfile() {
   return window['go']['main']['App']['ClearUserProfile']();
 }
@@ -148,6 +152,10 @@ export function CreateKnowledgeBase(arg1, arg2, arg3, arg4) {
 
 export function CreateMCPServer(arg1) {
   return window['go']['main']['App']['CreateMCPServer'](arg1);
+}
+
+export function CreatePromptBacktestTask(arg1) {
+  return window['go']['main']['App']['CreatePromptBacktestTask'](arg1);
 }
 
 export function CreateSkill(arg1) {
@@ -212,6 +220,10 @@ export function DeleteMCPServer(arg1) {
 
 export function DeleteMorningStrategy(arg1) {
   return window['go']['main']['App']['DeleteMorningStrategy'](arg1);
+}
+
+export function DeletePromptBacktestTask(arg1) {
+  return window['go']['main']['App']['DeletePromptBacktestTask'](arg1);
 }
 
 export function DeletePromptTemplate(arg1) {
@@ -330,6 +342,10 @@ export function GetAiRecommendStocksList(arg1) {
   return window['go']['main']['App']['GetAiRecommendStocksList'](arg1);
 }
 
+export function GetAiRecommendStocksTodayStats(arg1, arg2) {
+  return window['go']['main']['App']['GetAiRecommendStocksTodayStats'](arg1, arg2);
+}
+
 export function GetAllBKCodes() {
   return window['go']['main']['App']['GetAllBKCodes']();
 }
@@ -424,6 +440,50 @@ export function GetBKFundFlowTopList(arg1) {
 
 export function GetBKFundFlowTopListByDate(arg1, arg2) {
   return window['go']['main']['App']['GetBKFundFlowTopListByDate'](arg1, arg2);
+}
+
+export function GetBinanceFundingRateHistory(arg1, arg2) {
+  return window['go']['main']['App']['GetBinanceFundingRateHistory'](arg1, arg2);
+}
+
+export function GetBinanceFuturesDerivatives(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetBinanceFuturesDerivatives'](arg1, arg2, arg3);
+}
+
+export function GetBinanceFuturesPremium() {
+  return window['go']['main']['App']['GetBinanceFuturesPremium']();
+}
+
+export function GetBinanceFuturesSymbols() {
+  return window['go']['main']['App']['GetBinanceFuturesSymbols']();
+}
+
+export function GetBinanceFuturesTicker(arg1) {
+  return window['go']['main']['App']['GetBinanceFuturesTicker'](arg1);
+}
+
+export function GetBinanceLongShortRatio(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GetBinanceLongShortRatio'](arg1, arg2, arg3, arg4);
+}
+
+export function GetBinanceOpenInterestHist(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetBinanceOpenInterestHist'](arg1, arg2, arg3);
+}
+
+export function GetBitgetFundingRateHistory(arg1, arg2) {
+  return window['go']['main']['App']['GetBitgetFundingRateHistory'](arg1, arg2);
+}
+
+export function GetBitgetFuturesDerivatives(arg1) {
+  return window['go']['main']['App']['GetBitgetFuturesDerivatives'](arg1);
+}
+
+export function GetBitgetFuturesSymbols() {
+  return window['go']['main']['App']['GetBitgetFuturesSymbols']();
+}
+
+export function GetBitgetFuturesTicker(arg1) {
+  return window['go']['main']['App']['GetBitgetFuturesTicker'](arg1);
 }
 
 export function GetChangeRank(arg1, arg2) {
@@ -694,6 +754,26 @@ export function GetProfileLearnAiConfigId() {
   return window['go']['main']['App']['GetProfileLearnAiConfigId']();
 }
 
+export function GetPromptBacktestPicks(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GetPromptBacktestPicks'](arg1, arg2, arg3, arg4);
+}
+
+export function GetPromptBacktestTaskDetail(arg1) {
+  return window['go']['main']['App']['GetPromptBacktestTaskDetail'](arg1);
+}
+
+export function GetPromptBacktestTaskList() {
+  return window['go']['main']['App']['GetPromptBacktestTaskList']();
+}
+
+export function GetPromptTemplateBacktestDetail(arg1, arg2) {
+  return window['go']['main']['App']['GetPromptTemplateBacktestDetail'](arg1, arg2);
+}
+
+export function GetPromptTemplateBacktestStats(arg1) {
+  return window['go']['main']['App']['GetPromptTemplateBacktestStats'](arg1);
+}
+
 export function GetPromptTemplateList(arg1) {
   return window['go']['main']['App']['GetPromptTemplateList'](arg1);
 }
@@ -706,12 +786,20 @@ export function GetRecentDaysMarketStatistic(arg1) {
   return window['go']['main']['App']['GetRecentDaysMarketStatistic'](arg1);
 }
 
-export function GetRecommendBacktestStats() {
-  return window['go']['main']['App']['GetRecommendBacktestStats']();
+export function GetRecommendBacktestStats(arg1) {
+  return window['go']['main']['App']['GetRecommendBacktestStats'](arg1);
 }
 
 export function GetSectorAnchors(arg1) {
   return window['go']['main']['App']['GetSectorAnchors'](arg1);
+}
+
+export function GetSignalRecordPage(arg1) {
+  return window['go']['main']['App']['GetSignalRecordPage'](arg1);
+}
+
+export function GetSignalStats(arg1) {
+  return window['go']['main']['App']['GetSignalStats'](arg1);
 }
 
 export function GetSkillByID(arg1) {
@@ -986,12 +1074,20 @@ export function ListKnowledgeBases() {
   return window['go']['main']['App']['ListKnowledgeBases']();
 }
 
-export function ListRecommendBacktest(arg1, arg2) {
-  return window['go']['main']['App']['ListRecommendBacktest'](arg1, arg2);
+export function ListRecommendBacktest(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ListRecommendBacktest'](arg1, arg2, arg3);
 }
 
-export function ListRecommendBacktestByPrompt(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['ListRecommendBacktestByPrompt'](arg1, arg2, arg3, arg4);
+export function ListRecommendBacktestByPrompt(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['ListRecommendBacktestByPrompt'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ListRecommendBacktestBySkill(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ListRecommendBacktestBySkill'](arg1, arg2, arg3, arg4);
+}
+
+export function ListRecommendBacktestByTemplate(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ListRecommendBacktestByTemplate'](arg1, arg2, arg3, arg4);
 }
 
 export function ListSkillFiles(arg1) {
@@ -1008,6 +1104,10 @@ export function NewChatStream(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
 
 export function NewsPush(arg1) {
   return window['go']['main']['App']['NewsPush'](arg1);
+}
+
+export function NotifySignal(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['NotifySignal'](arg1, arg2, arg3, arg4);
 }
 
 export function OpenURL(arg1) {
@@ -1124,6 +1224,10 @@ export function SaveImage(arg1, arg2) {
 
 export function SaveKeyDepartments(arg1) {
   return window['go']['main']['App']['SaveKeyDepartments'](arg1);
+}
+
+export function SaveSignalRecords(arg1) {
+  return window['go']['main']['App']['SaveSignalRecords'](arg1);
 }
 
 export function SaveStockChangesToHistory(arg1) {
@@ -1250,6 +1354,14 @@ export function SummaryStockNews(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8)
   return window['go']['main']['App']['SummaryStockNews'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
 
+export function TestDingDingNotice(arg1, arg2) {
+  return window['go']['main']['App']['TestDingDingNotice'](arg1, arg2);
+}
+
+export function TestFeishuNotice(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TestFeishuNotice'](arg1, arg2, arg3);
+}
+
 export function TestMCPServer(arg1) {
   return window['go']['main']['App']['TestMCPServer'](arg1);
 }
@@ -1328,6 +1440,10 @@ export function UploadKBFile(arg1, arg2) {
 
 export function UploadKBFiles(arg1, arg2) {
   return window['go']['main']['App']['UploadKBFiles'](arg1, arg2);
+}
+
+export function VacuumDatabase() {
+  return window['go']['main']['App']['VacuumDatabase']();
 }
 
 export function ValidateCronExpr(arg1) {

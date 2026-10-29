@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -76,6 +77,14 @@ func main() {
 	// 记录退出信号（仅类 Unix；Windows GUI 程序不接收控制台信号）
 	installSignalLogger()
 
+	// 更新后「立即重启」场景：RestartApp 启动的新进程携带 -wait-parent=<旧进程PID>，
+	// 此处等待旧进程完全退出（释放 Wails 单实例锁）后再继续启动，
+	// 否则新进程会被 SingleInstanceLock 当作第二实例而直接退出，表现为"只关闭不重启"。
+	// 旧进程退出前会做 WAL checkpoint 收尾（最长 20s），等待上限须大于该收尾时长
+	if pid, ok := parentPIDFromArgs(); ok {
+		waitForProcessExit(pid, 60*time.Second)
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			log.SugaredLogger.Errorf("main panic: %v\nstack: %s", r, string(debug.Stack()))
@@ -95,6 +104,11 @@ func main() {
 	db.Init("")
 	data.InitAnalyzeSentiment()
 	go AutoMigrate()
+	// 每笔持仓止盈止损监控守护协程（幂等；未开启开关时空转，10 秒一次仅读配置）
+	// 定制版本（-tags custom）不含 OKX/合约功能，不启动该守护
+	if !CustomBuild {
+		data.StartOKXTPSLMonitor()
+	}
 
 	//db.Dao.Model(&data.Group{}).Where("id = ?", 0).FirstOrCreate(&data.Group{
 	//	Name: "默认分组",
@@ -251,6 +265,18 @@ func main() {
 		log.SugaredLogger.Fatal(err)
 	}
 
+}
+
+// parentPIDFromArgs 解析重启参数 -wait-parent=<pid>（由 RestartApp 在重启时注入）
+func parentPIDFromArgs() (int, bool) {
+	for _, arg := range os.Args[1:] {
+		if pidStr, found := strings.CutPrefix(arg, "-wait-parent="); found {
+			if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 {
+				return pid, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func cacheCookies(url string) {
@@ -496,7 +522,12 @@ func checkDir(dir string) {
 		log.SugaredLogger.Errorf("create dir %s failed: %v", dir, err)
 	}
 	if BuildKey == "" {
-		BuildKey = "cc1e0d684e32f176c56ff1fcf384dcd9"
+		// 正式密钥只经 ldflags（-X main.BuildKey=...）注入，不落仓库；缺失时只能用占位密钥，
+		// 此时赞助码必然校验失败（历史上表现为"Windows 能验证、mac 不能"，因为 mac 走 CI）。
+		// 这里显式告警，避免发布出一个赞助码不可用的包。
+		BuildKey = data.DefaultSponsorAESKeyHex
+		log.SugaredLogger.Warnf("BuildKey 未注入，已回退到占位密钥，赞助码校验将失败；" +
+			"正式发布请使用 -ldflags \"-X main.BuildKey=...\" 构建")
 	}
 }
 

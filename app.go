@@ -20,9 +20,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
 	// 内嵌 IANA 时区数据库，避免发行版二进制因找不到 GOROOT/lib/time/zoneinfo.zip
 	// 导致 time.LoadLocation("Asia/Shanghai") 失败（loc 为 nil 时 Time.In 会 panic）
 	_ "time/tzdata"
@@ -43,18 +45,23 @@ import (
 
 // App struct
 type App struct {
-	ctx                context.Context
-	cache              *freecache.Cache
-	cron               *cron.Cron
-	cronEntrys         map[string]cron.EntryID
-	cronEntrysMu       sync.Mutex
-	AiTools            []data.Tool
-	SponsorInfo        map[string]any
-	VipLevel           int64
-	summaryMu          sync.Mutex
-	summarySession     *summarySession
+	ctx          context.Context
+	cache        *freecache.Cache
+	cron         *cron.Cron
+	cronEntrys   map[string]cron.EntryID
+	cronEntrysMu sync.Mutex
+	AiTools      []data.Tool
+	// SponsorInfo 会被定时任务（CheckUpdate）写入、Wails 绑定（GetSponsorInfo）与 isVip 并发读取，
+	// 必须 sponsorMu 保护，否则触发 runtime "concurrent map writes" fatal 直接闪退
+	SponsorInfo map[string]any
+	sponsorMu   sync.RWMutex
+	VipLevel    int64
+	summaryMu   sync.Mutex
+	// summarySessions 按 eventName 隔离的进行中总结会话（市场总结、悬浮助手等各用各的事件名，
+	// 互不误杀：某一入口的新请求或手动中断只取消自己事件名下的会话）
+	summarySessions    map[string]*summarySession
 	agentMu            sync.Mutex
-	agentCancel        context.CancelFunc
+	agentSessions      map[string]*agentRunSession
 	stockAlertMu       sync.Mutex
 	stockAlertLastSent map[string]time.Time
 	priceAtAlertReset  map[string]float64
@@ -75,6 +82,8 @@ func NewApp() *App {
 		cron:               c,
 		cronEntrys:         make(map[string]cron.EntryID),
 		AiTools:            tools,
+		agentSessions:      make(map[string]*agentRunSession),
+		summarySessions:    make(map[string]*summarySession),
 		stockAlertLastSent: make(map[string]time.Time),
 		priceAtAlertReset:  make(map[string]float64),
 	}
@@ -99,8 +108,36 @@ func (a *App) removeCronEntry(key string) {
 	a.cronEntrysMu.Unlock()
 }
 
+// setSponsorInfo 在局部 map 上完成 JSON 解析后整体替换引用，
+// 避免向共享 map 写入 key 时与并发读发生竞态。
+func (a *App) setSponsorInfo(raw []byte) error {
+	info := make(map[string]any)
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return err
+	}
+	a.sponsorMu.Lock()
+	a.SponsorInfo = info
+	a.sponsorMu.Unlock()
+	return nil
+}
+
+// getSponsorInfoCopy 返回 SponsorInfo 的浅拷贝快照。
+// Wails 对返回值的序列化发生在锁之外的 goroutine，必须返回拷贝而非引用。
+func (a *App) getSponsorInfoCopy() map[string]any {
+	a.sponsorMu.RLock()
+	defer a.sponsorMu.RUnlock()
+	if a.SponsorInfo == nil {
+		return map[string]any{}
+	}
+	info := make(map[string]any, len(a.SponsorInfo))
+	for k, v := range a.SponsorInfo {
+		info[k] = v
+	}
+	return info
+}
+
 func (a *App) GetSponsorInfo() map[string]any {
-	return a.SponsorInfo
+	return a.getSponsorInfoCopy()
 }
 
 // GetEffectiveSponsorVip 从本地配置解密赞助信息并判断当前是否在 VIP 有效期内
@@ -165,11 +202,16 @@ func (a *App) CheckDeviceBinding(token string, apiBase string) map[string]any {
 	return result
 }
 
+// promptPlazaTryTimeout 单次广场请求超时：主地址无响应时尽快回退备用地址，
+// 避免沿用全局 300s 超时导致界面长时间无响应。
+const promptPlazaTryTimeout = 15 * time.Second
+
 // PromptPlazaRequest 以 Go 后端代理的方式请求提示词广场 API，
 // 规避 macOS WKWebView 的 App Transport Security 对明文 HTTP 的限制，
 // 前端不应直接 fetch 远程广场接口。
+// 主地址网络层不可用（超时/连接失败）时自动回退备用地址重试，见 data.PromptPlazaApiBases。
 // method: GET/POST/PUT/DELETE
-// apiBase: 广场 API 根地址，如 http://go-stock.sparkmemory.top:1918/api
+// apiBase: 广场 API 根地址，如 https://go-stock.sparkmemory.top/api；为空时按默认主地址处理
 // path: 接口路径，如 /auth/register
 // query: URL 查询参数，可为 nil；nil 值与空字符串会被跳过，与前端原 fetch 行为一致
 // body: 请求体 JSON 字符串，可为空
@@ -177,53 +219,62 @@ func (a *App) CheckDeviceBinding(token string, apiBase string) map[string]any {
 // 返回响应体解析后的 map（含 code/message/data），网络或解析失败时 code != 0。
 func (a *App) PromptPlazaRequest(method, apiBase, path string, query map[string]any, body, token string) map[string]any {
 	result := map[string]any{"code": -1, "message": "", "data": nil}
-	if apiBase == "" {
-		result["message"] = "apiBase 为空"
-		return result
+	params := make(map[string]string, len(query))
+	for k, v := range query {
+		if v == nil {
+			continue
+		}
+		s := fmt.Sprintf("%v", v)
+		if s == "" {
+			continue
+		}
+		params[k] = s
 	}
-	url := strings.TrimRight(apiBase, "/") + path
-	req := data.SharedHTTPClient.R().SetHeader("Content-Type", "application/json")
-	if token != "" {
-		req = req.SetHeader("Authorization", "Bearer "+token)
-	}
-	if len(query) > 0 {
-		params := make(map[string]string, len(query))
-		for k, v := range query {
-			if v == nil {
-				continue
-			}
-			s := fmt.Sprintf("%v", v)
-			if s == "" {
-				continue
-			}
-			params[k] = s
+
+	bases := data.PromptPlazaApiBases(apiBase)
+	client := data.CreateHTTPClientWithTimeout(promptPlazaTryTimeout)
+	var lastErr error
+	for i, base := range bases {
+		url := strings.TrimRight(base, "/") + path
+		req := client.R().SetHeader("Content-Type", "application/json")
+		if token != "" {
+			req = req.SetHeader("Authorization", "Bearer "+token)
 		}
 		if len(params) > 0 {
 			req = req.SetQueryParams(params)
 		}
-	}
-	if body != "" {
-		req = req.SetBody(body)
+		if body != "" {
+			req = req.SetBody(body)
+		}
+
+		resp, err := req.Execute(strings.ToUpper(method), url)
+		if err != nil {
+			// 网络层失败（超时/连接失败）：主地址不可用时回退备用地址重试
+			lastErr = err
+			if i+1 < len(bases) {
+				logger.SugaredLogger.Warnf("广场请求失败，回退备用地址重试：%s | err=%v", url, err)
+			}
+			continue
+		}
+
+		var respData map[string]any
+		if err := json.Unmarshal(resp.Body(), &respData); err != nil {
+			result["message"] = "响应解析失败: " + err.Error()
+			return result
+		}
+		if respData == nil {
+			respData = map[string]any{}
+		}
+		if _, ok := respData["code"]; !ok {
+			respData["code"] = -1
+		}
+		return respData
 	}
 
-	resp, err := req.Execute(strings.ToUpper(method), url)
-	if err != nil {
-		result["message"] = err.Error()
-		return result
+	if lastErr != nil {
+		result["message"] = lastErr.Error()
 	}
-
-	var respData map[string]any
-	if err := json.Unmarshal(resp.Body(), &respData); err != nil {
-		result["message"] = "响应解析失败: " + err.Error()
-		return result
-	}
-	if respData == nil {
-		respData = map[string]any{}
-	}
-	if _, ok := respData["code"]; !ok {
-		respData["code"] = -1
-	}
-	return respData
+	return result
 }
 
 func (a *App) QuitApp() {
@@ -235,31 +286,40 @@ func (a *App) QuitApp() {
 	}
 }
 func (a *App) CheckSponsorCode(sponsorCode string) map[string]any {
-	sponsorCode = strutil.Trim(sponsorCode)
-	if sponsorCode != "" {
-		raw, err := data.SafeDecryptSponsorCode(sponsorCode, BuildKey)
-		if err != nil || len(raw) == 0 {
-			logger.SugaredLogger.Errorf("赞助码校验失败: %v", err)
+	// 归一化后再持久化：粘贴常带入换行/零宽字符，存库时必须先洗掉，
+	// 否则每次读取都要重新清洗，展示端与校验端还可能看到不同的值。
+	sponsorCode = data.NormalizeSponsorCode(sponsorCode)
+	if sponsorCode == "" {
+		return map[string]any{"code": 0, "msg": "赞助码不能为空,请输入正确的赞助码!"}
+	}
+	raw, err := data.SafeDecryptSponsorCode(sponsorCode, BuildKey)
+	if err != nil || len(raw) == 0 {
+		logger.SugaredLogger.Errorf("赞助码校验失败: %v", err)
+		// 区分"复制带入不可见字符"与"码本身无效"：前者用户重新完整复制即可解决，
+		// 后者需要联系发码方；不给区分的话用户只能反复重试同一个码。
+		if errors.Is(err, data.ErrSponsorCodeFormat) {
 			return map[string]any{
 				"code": 0,
-				"msg":  "赞助码错误，请输入正确的赞助码!",
+				"msg":  "赞助码格式不正确（可能复制时带入了换行或不可见字符），请重新完整复制后重试!",
 			}
 		}
-
-		// 校验通过后，将赞助码持久化到 Settings 中
-		config := data.GetSettingConfig()
-		// 只在赞助码变更时写库，避免无谓更新
-		if config.SponsorCode != sponsorCode {
-			config.SponsorCode = sponsorCode
-			data.UpdateConfig(config)
-		}
-
 		return map[string]any{
-			"code": 1,
-			"msg":  "赞助码校验成功，感谢您的支持!",
+			"code": 0,
+			"msg":  "赞助码错误，请输入正确的赞助码!",
 		}
-	} else {
-		return map[string]any{"code": 0, "message": "赞助码不能为空,请输入正确的赞助码!"}
+	}
+
+	// 校验通过后，将赞助码持久化到 Settings 中
+	config := data.GetSettingConfig()
+	// 只在赞助码变更时写库，避免无谓更新
+	if config.SponsorCode != sponsorCode {
+		config.SponsorCode = sponsorCode
+		data.UpdateConfig(config)
+	}
+
+	return map[string]any{
+		"code": 1,
+		"msg":  "赞助码校验成功，感谢您的支持!",
 	}
 }
 
@@ -301,7 +361,7 @@ func (a *App) CheckUpdate(flag int) {
 			emitFailed("sponsor", "赞助码校验失败，无法检查更新。")
 			return
 		}
-		if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
+		if err = a.setSponsorInfo(raw); err != nil {
 			logger.SugaredLogger.Error(err.Error())
 			emitFailed("sponsor", "赞助码校验失败，无法检查更新。")
 			return
@@ -454,7 +514,7 @@ func (a *App) CheckUpdate(flag int) {
 		}
 
 		// 当前平台的安装包未包含在该 Release 中（如历史版本未发布 Linux 资产）时，
-			// 所有下载源必然 404，直接失败并引导手动下载，避免无谓的测速与重试。
+		// 所有下载源必然 404，直接失败并引导手动下载，避免无谓的测速与重试。
 		// 赞助码用户可能配置了自定义 CDN 地址（winDownUrl 等），不在此拦截。
 		if !assetFound && sponsorCode == "" {
 			logger.SugaredLogger.Errorf("release %s 中未找到当前平台的安装包: %s", releaseVersion.TagName, assetName)
@@ -591,11 +651,10 @@ func (a *App) CheckUpdate(flag int) {
 				})
 				return
 			}
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
-				"time":    "新版本：" + releaseVersion.TagName,
-				"isRed":   true,
-				"source":  "go-stock",
-				"content": "版本更新完成，重启应用后生效（直接退出并重新打开 go-stock 即可）。",
+			// 更新就绪，由前端弹出「是否立即重启」提示
+			go runtime.EventsEmit(a.ctx, "updateApplied", map[string]any{
+				"version": releaseVersion.TagName,
+				"message": "版本更新完成，重启应用后即可使用新版本。",
 			})
 			return
 		}
@@ -625,11 +684,10 @@ func (a *App) CheckUpdate(flag int) {
 			}
 			return
 		} else {
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
-				"time":    "新版本：" + releaseVersion.TagName,
-				"isRed":   true,
-				"source":  "go-stock",
-				"content": "版本更新完成,下次重启软件生效.",
+			// 更新已替换到磁盘，重启后生效；由前端弹出「是否立即重启」提示
+			go runtime.EventsEmit(a.ctx, "updateApplied", map[string]any{
+				"version": releaseVersion.TagName,
+				"message": "版本更新完成，重启应用后即可使用新版本。",
 			})
 		}
 	} else {
@@ -645,6 +703,20 @@ func (a *App) CheckUpdate(flag int) {
 
 	}
 
+}
+
+// buildRestartArgs 构造重启命令参数：注入 -wait-parent=<当前进程PID>，
+// 新进程在 main 启动阶段等待当前进程完全退出（释放单实例锁）后再启动；
+// 同时剔除历史残留的 -wait-parent 参数，避免重启链中等待陈旧 PID
+func buildRestartArgs() []string {
+	args := []string{"-wait-parent=" + strconv.Itoa(os.Getpid())}
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "-wait-parent=") {
+			continue
+		}
+		args = append(args, arg)
+	}
+	return args
 }
 
 // downloadUpdate 包装 data.DownloadWithProgress，通过 Wails 事件发射下载进度。
@@ -674,17 +746,19 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 			logger.SugaredLogger.Errorf("赞助码解密失败: %s", err.Error())
 			return "", "0", false
 		}
-		if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
+		if err = a.setSponsorInfo(raw); err != nil {
 			logger.SugaredLogger.Error(err.Error())
 			return "", "0", false
 		}
+		// 快照读取：解析期间 map 已被整体替换，这里取锁内拷贝，避免并发遍历/读取竞态
+		sponsorInfo := a.getSponsorInfoCopy()
 		// 赞助码 JSON 字段类型不保证（如 vipLevel 可能为数字），统一用 convertor.ToString 安全转换，
 		// 禁止 .(string) 硬断言（interface conversion panic 会导致整个进程闪退）
-		vipLevel = convertor.ToString(a.SponsorInfo["vipLevel"])
+		vipLevel = convertor.ToString(sponsorInfo["vipLevel"])
 		// 有效期判定与展示端（EffectiveSponsorVipStatus）共用同一份规则：
 		// 这里曾用同一个 err 承接三次 time.ParseInLocation，任一字段解析失败都会被后一次的 nil 覆盖，
 		// 导致「关于页按原始字段展示为 VIP2，功能门控却判为无效」的两套结论。
-		status := data.EvaluateSponsorVipInfo(a.SponsorInfo)
+		status := data.EvaluateSponsorVipInfo(sponsorInfo)
 		isVip = status.Active
 		if !isVip {
 			logger.SugaredLogger.Warnf("赞助码权益未生效: level=%s reason=%s", vipLevel, status.Reason)
@@ -696,10 +770,10 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 				winAssetName = "go-stock-windows-arm64.exe"
 			}
 			if isVip {
-				if a.SponsorInfo["winDownUrl"] == nil {
+				if sponsorInfo["winDownUrl"] == nil {
 					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, winAssetName)
 				} else {
-					downloadUrl = convertor.ToString(a.SponsorInfo["winDownUrl"])
+					downloadUrl = convertor.ToString(sponsorInfo["winDownUrl"])
 				}
 			} else {
 				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, winAssetName)
@@ -709,10 +783,10 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 			// 必须使用 .app bundle 的 zip 包（见 update_helper_darwin.go），
 			// 裸二进制 URL 会导致 ApplyMacUpdate 解压失败
 			if isVip {
-				if a.SponsorInfo["macDownUrl"] == nil {
+				if sponsorInfo["macDownUrl"] == nil {
 					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal.zip", releaseVersion.TagName)
 				} else {
-					downloadUrl = convertor.ToString(a.SponsorInfo["macDownUrl"])
+					downloadUrl = convertor.ToString(sponsorInfo["macDownUrl"])
 				}
 			} else {
 				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal.zip", releaseVersion.TagName)
@@ -724,10 +798,10 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 				linuxAssetName = "go-stock-linux-arm64"
 			}
 			if isVip {
-				if a.SponsorInfo["linuxDownUrl"] == nil {
+				if sponsorInfo["linuxDownUrl"] == nil {
 					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, linuxAssetName)
 				} else {
-					downloadUrl = convertor.ToString(a.SponsorInfo["linuxDownUrl"])
+					downloadUrl = convertor.ToString(sponsorInfo["linuxDownUrl"])
 				}
 			} else {
 				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, linuxAssetName)
@@ -990,8 +1064,8 @@ func (a *App) domReady(ctx context.Context) {
 			a.setCronEntry("MonitorFollowedStockCostPrices", idCostPrice)
 		}
 
-		// 后台买卖点信号监控节拍：窗口最小化时前端定时器会被深度节流，故由 Go 侧按分钟唤醒前端引擎
-		idSignalMonitor, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", 60), func() {
+		// 后台买卖点信号监控节拍：窗口最小化时前端定时器会被深度节流，故由 Go 侧按「扫描间隔」设置唤醒前端引擎（默认 60s）
+		idSignalMonitor, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", data.GetSignalScanIntervalSec()), func() {
 			a.signalMonitorTick()
 		})
 		if err != nil {
@@ -2107,6 +2181,9 @@ func (a *App) shutdown(ctx context.Context) {
 			//logger.SugaredLogger.Infof("save window size: %dx%d", w, h)
 		}
 	}
+	// 优雅关闭数据库：合并 WAL 并释放连接，避免下次启动时扫描恢复脏 WAL 而变慢
+	db.Close(15 * time.Second)
+	_ = logger.SugaredLogger.Sync()
 	//logger.SugaredLogger.Infof("application shutdown Version:%s", Version)
 }
 
@@ -2120,6 +2197,93 @@ func (a *App) Greet(stockCode string) *data.StockInfo {
 	db.Dao.Model(follow).Where("stock_code = ?", stockCode).Preload("Groups").Preload("Groups.GroupInfo").First(follow)
 	stockInfo := getStockInfo(*follow)
 	return stockInfo
+}
+
+// StockRealtimeQuote 轻量实时行情：只带列表展示所需的最新价、昨收与当日涨跌幅。
+type StockRealtimeQuote struct {
+	Code          string  `json:"code"`
+	Price         float64 `json:"price"`
+	PreClose      float64 `json:"preClose"`
+	ChangePercent float64 `json:"changePercent"`
+}
+
+// GetStocksRealtimeQuotes 批量取标的最新行情（自动去重；查不到的代码不出现在结果里）。
+// 供「股票推荐记录-买卖点信号」等前端列表展示最新价与当日涨跌幅使用。
+func (a *App) GetStocksRealtimeQuotes(stockCodes []string) []StockRealtimeQuote {
+	quotes := make([]StockRealtimeQuote, 0)
+	if len(stockCodes) == 0 {
+		return quotes
+	}
+	// 去重保序，避免同一代码在列表里重复请求
+	seen := make(map[string]bool, len(stockCodes))
+	codes := make([]string, 0, len(stockCodes))
+	for _, c := range stockCodes {
+		c = strings.TrimSpace(c)
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		codes = append(codes, c)
+	}
+	infos, err := data.NewStockDataApi().GetStockCodeRealTimeData(codes...)
+	if err != nil || infos == nil {
+		return quotes
+	}
+	for _, info := range *infos {
+		price, _ := convertor.ToFloat(info.Price)
+		// 停牌/无成交时回退卖一/买一报价
+		if price == 0 {
+			price, _ = convertor.ToFloat(info.A1P)
+		}
+		if price == 0 {
+			price, _ = convertor.ToFloat(info.B1P)
+		}
+		if price <= 0 {
+			continue
+		}
+		preClose, _ := convertor.ToFloat(info.PreClose)
+		changePercent := 0.0
+		if preClose > 0 {
+			changePercent = mathutil.RoundToFloat(mathutil.Div(price-preClose, preClose)*100, 3)
+		}
+		quotes = append(quotes, StockRealtimeQuote{
+			Code:          info.Code,
+			Price:         mathutil.RoundToFloat(price, 3),
+			PreClose:      preClose,
+			ChangePercent: changePercent,
+		})
+	}
+	return quotes
+}
+
+// StartMarketSignalScan 启动全市场买卖点扫描（通达信数据源）。
+// 扫描范围由 req.Markets 指定（SH/SZ/BJ 任意组合，空=全部），逐只拉 K 线并用
+// Go 版买卖点算法（与前端 calc.ts 同口径）打分，命中与进度经事件推送：
+//   - marketSignalScanProgress：进度快照（已节流 300ms）
+//   - marketSignalScanHit：单条命中信号
+func (a *App) StartMarketSignalScan(req data.MarketSignalScanRequest) error {
+	return data.StartMarketSignalScan(req, data.MarketSignalScanCallbacks{
+		OnProgress: func(p data.MarketSignalScanProgress) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "marketSignalScanProgress", p)
+			}
+		},
+		OnHit: func(h data.MarketSignalHit) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "marketSignalScanHit", h)
+			}
+		},
+	})
+}
+
+// StopMarketSignalScan 停止全市场买卖点扫描（异步生效）
+func (a *App) StopMarketSignalScan() {
+	data.StopMarketSignalScan()
+}
+
+// GetMarketSignalScanStatus 查询全市场买卖点扫描进度快照
+func (a *App) GetMarketSignalScanStatus() data.MarketSignalScanProgress {
+	return data.GetMarketSignalScanStatus()
 }
 
 func (a *App) Follow(stockCode string) string {
@@ -2521,14 +2685,35 @@ func (a *App) ExportConfig() string {
 	return "导出成功:" + file
 }
 
-// shareUploadURL 返回分析报告分享上传地址：广场服务地址为固定配置（定制版不可修改），
-// 官网与广场服务同进程部署，/upload 挂在 /api 前缀下。
-func shareUploadURL() string {
+// shareUploadTryTimeout 单次分享上传超时：与广场请求一致，主地址无响应时尽快回退备用地址。
+const shareUploadTryTimeout = 15 * time.Second
+
+// shareUploadURLs 返回分析报告分享上传的候选地址（主地址优先，备用地址兜底）：
+// 广场服务地址为固定配置（定制版不可修改），官网与广场服务同进程部署，/upload 挂在 /api 前缀下。
+func shareUploadURLs() []string {
 	base := strings.TrimSpace(data.GetSettingConfig().PromptPlazaApiBase)
-	if base == "" {
-		base = data.DefaultPromptPlazaApiBase
+	urls := make([]string, 0, 2)
+	for _, b := range data.PromptPlazaApiBases(base) {
+		urls = append(urls, strings.TrimSuffix(b, "/")+"/upload")
 	}
-	return strings.TrimSuffix(base, "/") + "/upload"
+	return urls
+}
+
+// postShareUpload 依次尝试主/备用广场地址上传分享内容，网络层失败时自动回退备用地址。
+// 返回服务端响应文本；全部失败时返回最后一次错误。
+func postShareUpload(form map[string]string) (string, error) {
+	client := data.CreateHTTPClientWithTimeout(shareUploadTryTimeout)
+	var lastErr error
+	for _, url := range shareUploadURLs() {
+		resp, err := client.R().SetHeader("ua-x", "go-stock").SetFormData(form).Post(url)
+		if err != nil {
+			lastErr = err
+			logger.SugaredLogger.Warnf("分享上传失败，尝试下一个地址：%s | err=%v", url, err)
+			continue
+		}
+		return resp.String(), nil
+	}
+	return "", lastErr
 }
 
 func (a *App) ShareAnalysis(stockCode, stockName string) string {
@@ -2536,16 +2721,16 @@ func (a *App) ShareAnalysis(stockCode, stockName string) string {
 	if res != nil && len(res.Content) > 100 {
 		analysisTime := res.CreatedAt.Format("2006/01/02")
 		//logger.SugaredLogger.Infof("%s analysisTime:%s", res.CreatedAt, analysisTime)
-		response, err := data.SharedHTTPClient.R().SetHeader("ua-x", "go-stock").SetFormData(map[string]string{
+		response, err := postShareUpload(map[string]string{
 			"text":         res.Content,
 			"stockCode":    stockCode,
 			"stockName":    stockName,
 			"analysisTime": analysisTime,
-		}).Post(shareUploadURL())
+		})
 		if err != nil {
 			return err.Error()
 		}
-		return response.String()
+		return response
 	} else {
 		return "分析结果异常"
 	}
@@ -2576,16 +2761,16 @@ func (a *App) ShareText(text, title string) string {
 		logger.SugaredLogger.Infof("ShareText 标题提取失败，回退为 AI助手 | 原文片段=%q", snippetForLog(text))
 	}
 	analysisTime := time.Now().Format("2006/01/02")
-	response, err := data.SharedHTTPClient.R().SetHeader("ua-x", "go-stock").SetFormData(map[string]string{
+	response, err := postShareUpload(map[string]string{
 		"text":         text,
 		"stockCode":    title,
 		"stockName":    title,
 		"analysisTime": analysisTime,
-	}).Post(shareUploadURL())
+	})
 	if err != nil {
 		return err.Error()
 	}
-	return response.String()
+	return response
 }
 
 // snippetForLog 返回用于日志打印的正文片段：截断到 maxSnippetRunes 个字符，换行转义为字面量 \n。
@@ -3038,6 +3223,12 @@ func (a *App) GetBinanceLongShortRatio(symbol, period, ratioType string, limit i
 	}
 }
 
+// GetExchangeAnnouncements 获取交易所公告资讯（币安 CMS + OKX v5 公告聚合）。
+// source: all/binance/okx；catalog: 币安为分类ID（如 48 新币上线），OKX 为 annType（如 announcements-new-listings），空为全部；page 从 1 开始。
+func (a *App) GetExchangeAnnouncements(source, catalog string, page int) []data.ExchangeAnnouncement {
+	return data.FetchExchangeAnnouncements(source, catalog, page)
+}
+
 // GetBitgetFuturesSymbols 获取全部 Bitget 美股永续合约基础信息（已过滤为非股票 RWA 之外的品种）。
 func (a *App) GetBitgetFuturesSymbols() []data.BitgetSymbolInfo {
 	return data.BitgetSymbolList()
@@ -3258,29 +3449,36 @@ type summarySession struct {
 	cancel context.CancelFunc
 }
 
+// agentRunSession 标识一次进行中的 AI Agent 流式会话（按 sessionId 隔离）。
+// 使用可比较的指针类型，便于会话结束时判断自己是否仍是该 sessionId 的当前会话，
+// 避免误清后来新会话的取消句柄。
+type agentRunSession struct {
+	cancel context.CancelFunc
+}
+
 func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int, enableTools bool, think bool, eventName string, historyJSON string, imagesJSON string) {
-	ctx, cancel := context.WithCancel(a.ctx)
-
-	// 保存当前会话，用于前端中断；新会话开始时取消旧会话
-	session := &summarySession{cancel: cancel}
-	a.summaryMu.Lock()
-	if a.summarySession != nil {
-		a.summarySession.cancel()
-	}
-	a.summarySession = session
-	a.summaryMu.Unlock()
-	// 仅当自己仍是当前会话时才清空，防止误清新会话的取消句柄
-	clearSession := func() {
-		a.summaryMu.Lock()
-		if a.summarySession == session {
-			a.summarySession = nil
-		}
-		a.summaryMu.Unlock()
-	}
-
 	// 允许前端自定义事件名，避免不同页面之间的事件冲突
 	if strings.TrimSpace(eventName) == "" {
 		eventName = "summaryStockNews"
+	}
+
+	ctx, cancel := context.WithCancel(a.ctx)
+
+	// 保存当前会话（按 eventName 隔离），用于前端中断；同一入口的新会话开始时取消旧会话
+	session := &summarySession{cancel: cancel}
+	a.summaryMu.Lock()
+	if prev := a.summarySessions[eventName]; prev != nil {
+		prev.cancel()
+	}
+	a.summarySessions[eventName] = session
+	a.summaryMu.Unlock()
+	// 仅当自己仍是该事件名的当前会话时才清空，防止误清新会话的取消句柄
+	clearSession := func() {
+		a.summaryMu.Lock()
+		if a.summarySessions[eventName] == session {
+			delete(a.summarySessions, eventName)
+		}
+		a.summaryMu.Unlock()
 	}
 
 	// 解析对话历史（AI 助手记忆）：空字符串或解析失败则无历史
@@ -3624,6 +3822,34 @@ func (a *App) SaveAiAssistantSession(sessionId string, messages []models.AiAssis
 	return data.SaveAiAssistantSession(sessionId, messages)
 }
 
+// ListAiAssistantSessions 获取 AI 助手会话的元信息（sessionId/标题/更新时间/置顶），置顶优先、其余按更新时间倒序。
+// keyword 非空时为搜索模式（匹配会话标题与内容），否则仅返回最近 limit 条。
+func (a *App) ListAiAssistantSessions(keyword string, limit int) []models.AiAssistantSessionMeta {
+	list, err := data.ListAiAssistantSessions(keyword, limit)
+	if err != nil {
+		logger.SugaredLogger.Errorf("ListAiAssistantSessions failed: %v", err)
+		return []models.AiAssistantSessionMeta{}
+	}
+	return list
+}
+
+// RenameAiAssistantSession 设置会话自定义标题；标题为空时清除自定义，回退为正文派生标题
+func (a *App) RenameAiAssistantSession(sessionId string, title string) error {
+	return data.RenameAiAssistantSession(sessionId, title)
+}
+
+// SetAiAssistantSessionPinned 设置会话置顶标记，置顶会话在列表中排在最前
+func (a *App) SetAiAssistantSessionPinned(sessionId string, pinned bool) error {
+	return data.SetAiAssistantSessionPinned(sessionId, pinned)
+}
+
+// DeleteAiAssistantSession 删除指定 AI 助手会话（含其对话记忆）：
+// 先中断该会话正在进行的 Agent 运行，避免删除后后台仍在写入。
+func (a *App) DeleteAiAssistantSession(sessionId string) error {
+	a.AbortChatWithAgentBySession(sessionId)
+	return data.DeleteAiAssistantSession(sessionId)
+}
+
 // FetchAiModels
 //
 //	@Description: 根据接口地址与 apiKey 自动获取支持的模型列表（OpenAI/DeepSeek 兼容 /models 接口）
@@ -3903,13 +4129,27 @@ func (a *App) catchUpRecommendBacktest(cronApi *agent.CronTaskApi) {
 	}(stale)
 }
 
-// AbortSummaryStockNews 取消当前进行中的 SummaryStockNews 流式回答
+// AbortSummaryStockNews 取消全部正在进行的 SummaryStockNews 流式回答，保持"全停"语义
 func (a *App) AbortSummaryStockNews() {
 	a.summaryMu.Lock()
 	defer a.summaryMu.Unlock()
-	if a.summarySession != nil {
-		a.summarySession.cancel()
-		a.summarySession = nil
+	for name, session := range a.summarySessions {
+		session.cancel()
+		delete(a.summarySessions, name)
+	}
+}
+
+// AbortSummaryStockNewsByEvent 仅取消指定事件名（页面入口）正在进行的总结会话，
+// 多入口并行时互不影响（如市场总结的中断按钮不影响悬浮助手的回答）。
+func (a *App) AbortSummaryStockNewsByEvent(eventName string) {
+	if strings.TrimSpace(eventName) == "" {
+		eventName = "summaryStockNews"
+	}
+	a.summaryMu.Lock()
+	defer a.summaryMu.Unlock()
+	if session := a.summarySessions[eventName]; session != nil {
+		session.cancel()
+		delete(a.summarySessions, eventName)
 	}
 }
 

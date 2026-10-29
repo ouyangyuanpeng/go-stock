@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -124,6 +125,10 @@ var toolGroupMap = map[string]ToolGroup{
 
 	"SearchAnnouncement": GroupNewsResearch,
 
+	// DeepSeek 联网搜索/网页抓取：通用资讯类能力，归 news_research 常驻组
+	"WebSearch": GroupNewsResearch,
+	"WebFetch":  GroupNewsResearch,
+
 	"FilterStocks":            GroupScreening,
 	"SearchStockByIndicators": GroupScreening,
 
@@ -157,7 +162,6 @@ var toolGroupMap = map[string]ToolGroup{
 	"QueryStockNewsTool":          GroupNewsResearch,
 	"GetNewsListData":             GroupNewsResearch,
 	"GetStockResearchReport":      GroupNewsResearch,
-	"GetIndustryResearchReport":   GroupNewsResearch,
 	"GetSecuritiesCompanyOpinion": GroupNewsResearch,
 	"StockNotice":                 GroupNewsResearch,
 	"GetStockNotice":              GroupNewsResearch,
@@ -272,6 +276,14 @@ var toolGroupMap = map[string]ToolGroup{
 	"GetBinanceFuturesMarket":      GroupCrypto,
 	"GetBinanceFuturesKLine":       GroupCrypto,
 	"GetBinanceFuturesDerivatives": GroupCrypto,
+
+	// OKX（欧易）交易：与币安同属加密组，关键词触发（OKX/欧易/下单等）；
+	// 未配置凭证时 IsToolKeyConfigured 会整体过滤。
+	"GetOKXAccount":   GroupCrypto,
+	"GetOKXPositions": GroupCrypto,
+	"GetOKXOrders":    GroupCrypto,
+	"PlaceOKXOrder":   GroupCrypto,
+	"CancelOKXOrder":  GroupCrypto,
 }
 
 type groupKeywords struct {
@@ -392,10 +404,14 @@ var groupKeywordsList = []groupKeywords{
 		"比特币", "以太坊", "狗狗币", "瑞波币", "山寨币", "主流币",
 		"BTC", "ETH", "SOL", "BNB", "DOGE",
 		"美股永续", "美股合约", "资金费率", "未平仓", "多空比", "bn:",
+		"OKX", "欧易", "ok:", "挂单", "撤单", "杠杆", "开多", "开空", "平仓",
 	}},
 }
 
-func ClassifyQuestion(question string) map[ToolGroup]bool {
+// MatchedToolGroups 仅返回问题中「显式命中关键词」的工具组（始终含 base 组），不含常驻的
+// coreResearchGroups。供复杂度/执行模式判定使用：常驻组给的是「能力上限」而非「问题真实涉及的
+// 领域数」，用它计数会把任何问题都误判成横跨多领域的高复杂度任务。
+func MatchedToolGroups(question string) map[ToolGroup]bool {
 	matched := map[ToolGroup]bool{
 		GroupBase: true,
 	}
@@ -411,10 +427,67 @@ func ClassifyQuestion(question string) map[ToolGroup]bool {
 		}
 	}
 
-	if len(matched) <= 1 {
-		for _, g := range DefaultToolGroupsForIntent(DetectQuestionIntent(question)) {
-			matched[g] = true
+	return matched
+}
+
+// coreResearchGroups 常驻核心工具组：个股分析 / 行情 / 资讯 / 选股 / 资金流。
+//
+// 这五类是所有问题都可能用到的基础研究能力，故对任何问题都常驻注入，与用户措辞无关——
+// 否则一旦问得模糊就会缺失对应工具。刻意不含 GroupOperations（自选/持仓/操作计划/分组与
+// MCP 管理）、GroupAIAnalysis（AI 荐股/历史分析）与 GroupCrypto（币安永续）：
+// 这几类需要用户明确指令才该启用，常驻只会平白占用工具 schema 的上下文预算。
+var coreResearchGroups = []ToolGroup{
+	GroupStockAnalysis,
+	GroupMarket,
+	GroupNewsResearch,
+	GroupScreening,
+	GroupMoneyFlow,
+}
+
+// chitchatPatterns 问候/致谢/身份询问类开场白（前缀匹配，忽略大小写）。
+//
+// 仅当问题未命中任何领域关键词组时才做闲聊判定（见 ClassifyQuestion），
+// 因此不会误伤「你好，帮我分析下茅台」这类问候+正事的混合输入——后者已命中
+// stock_analysis 组，走正常分组路径。
+var chitchatPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)^(你好|您好|哈喽|哈罗|hello+|hi+|嗨|在吗|在么|早安|早上好|中午好|下午好|晚上好|晚安|再见|拜拜|谢谢|多谢|感谢|辛苦了?)[，,。！!~？?\s]*`),
+	regexp.MustCompile(`^(你是谁|你叫什么(名字)?|介绍一下?你自己?|介绍下自己|说说你自己|用一句话介绍|你能做什么|你会什么|你有什么功能|你能干什么)`),
+}
+
+// IsChitchatQuestion 判断是否为纯闲聊/问候/身份询问（无实际数据处理诉求）。
+// 闲聊开场白都很短，长问题不参与判定，避免误伤长输入。
+func IsChitchatQuestion(question string) bool {
+	q := strings.TrimSpace(question)
+	if q == "" {
+		return true
+	}
+	if len([]rune(q)) > 40 {
+		return false
+	}
+	for _, re := range chitchatPatterns {
+		if re.MatchString(q) {
+			return true
 		}
+	}
+	return false
+}
+
+// ClassifyQuestion 决定某个问题要注入哪些工具组。
+//
+// coreResearchGroups 常驻；关键词匹配只做增量，用于额外放开运营/加密/AI 分析等
+// 需要用户明确指令才该启用的分组。纯闲聊/问候（「你好」）不注入研究组——
+// 问候语没必要背着 180+ 工具 schema；DeepAgents 下其余工具仍可经 ToolSearch
+// 动态检索兜底，React/PlanExecute 下闲聊也确实用不到数据工具。
+func ClassifyQuestion(question string) map[ToolGroup]bool {
+	matched := MatchedToolGroups(question)
+
+	// 未命中任何领域关键词且是闲聊开场白 → 仅保留 base 组
+	if len(matched) == 1 && IsChitchatQuestion(question) {
+		return matched
+	}
+
+	for _, g := range coreResearchGroups {
+		matched[g] = true
 	}
 
 	return matched
@@ -465,6 +538,13 @@ func IsToolGrouped(name string) bool {
 	if _, ok := toolGroupMap[name]; ok {
 		return true
 	}
+	_, ok := alwaysVisibleTools[name]
+	return ok
+}
+
+// IsAlwaysVisibleTool 判断工具是否属于跨领域常驻白名单（知识库/长期记忆/画像）。
+// 主要供 FilterToolsByGroups 等装配层判定跨领域常驻集合。
+func IsAlwaysVisibleTool(name string) bool {
 	_, ok := alwaysVisibleTools[name]
 	return ok
 }

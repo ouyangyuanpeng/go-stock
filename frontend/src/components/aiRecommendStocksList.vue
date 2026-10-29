@@ -10,11 +10,15 @@ import {
   UpdateAiRecommendStocksAlert,
   ShareAnalysis,
   RunRecommendBacktest,
-  ListRecommendBacktest
+  ListRecommendBacktest,
+  GetStocksRealtimeQuotes
 } from "../../wailsjs/go/main/App";
 import {NAvatar, NButton, NEllipsis, NSwitch, NTag, NText, useMessage, useNotification} from "naive-ui";
 import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
 import { KLINE_MODAL_CONTENT_STYLE, KLINE_MODAL_STYLE, useKlineModalFit } from "./kline/useKlineModalFit";
+import { detectRecentBuySell, formatSignalTime, SIGNAL_INTERVAL_OPTIONS } from "./kline/signalMonitor";
+import { BUY_SELL_SCORE_OPTIONS } from "./kline/constants";
+import { BUY_SELL_MAX_SCORE } from "./kline/calc";
 import sparkLine from "./stockSparkLine.vue"
 import {MdPreview} from "md-editor-v3";
 import {format} from "date-fns";
@@ -743,6 +747,281 @@ const tableHeightStyle = {
   marginTop: '10px'
 }
 
+// ===== 买卖点信号快照 =====
+// 扫描「推荐统计」所选区间的推荐股池，复用「信号监控」面板同一套算法（14 路共振 + 图表门控）：
+// 取数口径（复权、最近一年窗口、MIN_BARS 门控）与买卖点算法都走 kline/signalMonitor 的 detectRecentBuySell，避免两处定义漂移。
+const SIGNAL_FETCH_CONCURRENCY = 4
+const signalKltRef = ref('101')
+const signalScoreRef = ref(6)
+const signalDaysRef = ref(2)
+const signalLoading = ref(false)
+const signalScanned = ref(false)
+const signalInsufficientRef = ref(0)
+const signalProgress = reactive({ done: 0, total: 0 })
+const signalRowsRef = ref([])
+
+const signalKltOptions = SIGNAL_INTERVAL_OPTIONS.map((it) => ({ label: it.label, value: it.klt }))
+const signalScoreOptions = BUY_SELL_SCORE_OPTIONS.map((o) => ({ label: o.label, value: o.value }))
+// 信号出现的时间范围：以 K 线最新一根所在交易日为基准回溯，周末/节假日不错位
+const signalRangeOptions = [
+  { label: '今日', value: 1 },
+  { label: '近 2 日', value: 2 },
+  { label: '近 5 日', value: 5 }
+]
+
+// ===== 定时扫描 + 新信号推送：设置持久化，定时触发与手动同走 scanSignals，只对增量弹通知 =====
+const SIGNAL_AUTO_KEY = 'ai-recommend-signal-autoscan'
+const signalAutoRef = ref(false)
+const signalAutoMinRef = ref(15)
+const signalLastScanAtRef = ref('')
+const signalAutoOptions = [5, 10, 30, 60].map((m) => ({ label: `${m} 分钟`, value: m }))
+let signalAutoTimer = null
+/** 上一轮信号键（code|kind|time）与扫描参数：定时扫描据此 diff 出新信号；参数变化即重置基线（换参数后首轮不通知） */
+let lastSignalKeys = new Set()
+let lastSignalParams = ''
+
+function persistSignalAuto() {
+  localStorage.setItem(SIGNAL_AUTO_KEY, JSON.stringify({
+    enabled: signalAutoRef.value,
+    intervalMin: signalAutoMinRef.value,
+    klt: signalKltRef.value,
+    score: signalScoreRef.value,
+    days: signalDaysRef.value,
+  }))
+}
+try {
+  const saved = JSON.parse(localStorage.getItem(SIGNAL_AUTO_KEY) || '{}')
+  if (typeof saved.enabled === 'boolean') signalAutoRef.value = saved.enabled
+  if (signalAutoOptions.some((o) => o.value === saved.intervalMin)) signalAutoMinRef.value = saved.intervalMin
+  if (SIGNAL_INTERVAL_OPTIONS.some((o) => o.klt === saved.klt)) signalKltRef.value = saved.klt
+  if (BUY_SELL_SCORE_OPTIONS.some((o) => o.value === saved.score)) signalScoreRef.value = saved.score
+  if (signalRangeOptions.some((o) => o.value === saved.days)) signalDaysRef.value = saved.days
+} catch { /* 脏数据忽略 */ }
+
+// 强度分档：命中路数越多越强（14 路全中=100%）。阈值按满分比例维持（10 路 7/5 ≈ 14 路 10/7）
+function strengthType(score) {
+  if (score >= 10) return 'error'
+  if (score >= 7) return 'warning'
+  return 'info'
+}
+
+// ===== 方向筛选：纯前端过滤扫描结果，不影响扫描本身与定时通知基线 =====
+const signalKindRef = ref('')
+const signalKindOptions = [
+  { label: '全部', value: '' },
+  { label: '买点', value: 'buy' },
+  { label: '卖点', value: 'sell' },
+]
+const visibleSignalRows = computed(() => {
+  const k = signalKindRef.value
+  return k ? signalRowsRef.value.filter((s) => s.kind === k) : signalRowsRef.value
+})
+/** 命中数文案：筛选生效时显示「筛选后/总数」，未筛选只显示总数 */
+const signalCountText = computed(() => {
+  const total = signalRowsRef.value.length
+  return signalKindRef.value ? `${visibleSignalRows.value.length}/${total} 只` : `${total} 只`
+})
+
+// ===== 最新行情：随每次扫描批量拉取，供信号表展示最新价/当日涨跌幅/相对信号点涨跌幅 =====
+const quoteMapRef = ref({})
+
+/** 行情键归一：新浪美股前缀 gb_ 与 us 等价（gb_aapl ≡ usaapl），其余小写直用 */
+function quoteKey(code) {
+  const c = (code || '').toLowerCase()
+  return c.startsWith('gb_') ? 'us' + c.slice(3) : c
+}
+
+/** 批量拉最新行情（失败静默保留旧缓存，不打断信号展示） */
+async function refreshSignalQuotes(rows) {
+  const codes = [...new Set((rows || []).map((r) => r.code).filter(Boolean))]
+  if (!codes.length) {
+    quoteMapRef.value = {}
+    return
+  }
+  try {
+    const quotes = await GetStocksRealtimeQuotes(codes)
+    const map = {}
+    for (const q of quotes || []) map[quoteKey(q.code)] = q
+    quoteMapRef.value = map
+  } catch (e) { /* 行情拉取失败不影响信号列表 */ }
+}
+
+// 逐只票扫描最近窗口内的买卖点；并发受限，单只失败不影响其余；扫描不限数量，但先按代码去重
+// silent=true 为定时触发：股池为空不弹警告，完成后与上一轮 diff，新增信号走应用内通知
+async function scanSignals(silent = false) {
+  if (signalLoading.value) return
+  const items = todayStatsRef.value.items || []
+  if (!items.length) {
+    if (!silent) notify.warning({ content: '推荐股池为空，请先调整上方的日期区间', duration: 3000 })
+    return
+  }
+  // 同一只票可能被多日/多模型重复推荐，按归一化代码去重，避免重复取数与重复信号
+  const seen = new Set()
+  const list = []
+  for (const it of items) {
+    const code = String(it.stockCode || '').trim()
+    if (!code || seen.has(code)) continue
+    seen.add(code)
+    list.push(it)
+  }
+  signalLoading.value = true
+  signalScanned.value = true
+  signalRowsRef.value = []
+  signalInsufficientRef.value = 0
+  signalProgress.done = 0
+  signalProgress.total = list.length
+  const klt = signalKltRef.value
+  const score = signalScoreRef.value
+  const days = signalDaysRef.value
+  const out = []
+  let cursor = 0
+  try {
+    const workers = new Array(Math.min(SIGNAL_FETCH_CONCURRENCY, list.length)).fill(0).map(async () => {
+      while (true) {
+        const idx = cursor++
+        if (idx >= list.length) return
+        const it = list[idx]
+        try {
+          const res = await detectRecentBuySell(it.stockCode, it.stockName, klt, score, days)
+          if (res.insufficient) signalInsufficientRef.value++
+          for (const s of res.signals) out.push(s)
+        } catch (e) { /* 单只票取数/计算失败跳过 */ }
+        signalProgress.done++
+      }
+    })
+    await Promise.all(workers)
+    // 默认按信号强度降序（强度=共振路数）；同强度再按信号时间新的在前
+    out.sort((a, b) => ((b.score || 0) - (a.score || 0)) || (b.time - a.time))
+    signalRowsRef.value = out
+    // 批量刷新最新行情（异步，不阻塞信号表渲染）
+    refreshSignalQuotes(out)
+    // 通知基线：定时扫描与上轮同参数时对增量弹通知；手动扫描只刷新基线（用户正盯着结果页）
+    const params = `${klt}|${score}|${days}`
+    const keys = new Set(out.map((s) => `${s.code}|${s.kind}|${s.time}`))
+    if (silent && params === lastSignalParams) {
+      const fresh = out.filter((s) => !lastSignalKeys.has(`${s.code}|${s.kind}|${s.time}`))
+      if (fresh.length) {
+        const lines = fresh.slice(0, 6).map((s) => `${s.name} ${s.kind === 'buy' ? '买点' : '卖点'}（${s.score}/${BUY_SELL_MAX_SCORE} 路）`)
+        notify.info({
+          title: `推荐股池买卖点：新增 ${fresh.length} 个信号`,
+          content: lines.join('；') + (fresh.length > 6 ? ' 等' : ''),
+          duration: 8000,
+        })
+      }
+    }
+    lastSignalKeys = keys
+    lastSignalParams = params
+    signalLastScanAtRef.value = new Date().toTimeString().slice(0, 5)
+  } finally {
+    signalLoading.value = false
+  }
+}
+
+// 定时扫描器：间隔可调，扫描进行中跳过本轮；页面卸载即停
+function stopSignalAuto() {
+  if (signalAutoTimer) {
+    clearInterval(signalAutoTimer)
+    signalAutoTimer = null
+  }
+}
+function startSignalAuto() {
+  stopSignalAuto()
+  signalAutoTimer = setInterval(() => scanSignals(true), signalAutoMinRef.value * 60000)
+}
+watch(signalAutoRef, (v) => {
+  persistSignalAuto()
+  if (v) startSignalAuto()
+  else stopSignalAuto()
+})
+watch(signalAutoMinRef, () => {
+  persistSignalAuto()
+  if (signalAutoRef.value) startSignalAuto()
+})
+watch([signalKltRef, signalScoreRef, signalDaysRef], persistSignalAuto)
+if (signalAutoRef.value) startSignalAuto()
+onBeforeUnmount(stopSignalAuto)
+
+// 信号行打开 K 线：复用页面已有的弹窗（代码为归一化格式，与图表口径一致）
+function openSignalKline(row) {
+  const score = Number(row.score) || 0
+  modalDataRef.title = row.name
+  modalDataRef.stockCode = row.code
+  modalDataRef.stockName = row.name
+  modalDataRef.remarks = ''
+  modalDataRef.content = `${row.kind === 'buy' ? '买点' : '卖点'}信号 · 强度 ${Math.round((score / BUY_SELL_MAX_SCORE) * 100)}%（${score}/${BUY_SELL_MAX_SCORE} 路）· ${formatSignalTime(row.time)}`
+  modalDataRef.riskRemarks = (row.reasons || []).join('、')
+  modalDataRef.modelName = ''
+  modalDataRef.systemPrompt = ''
+  modalDataRef.userPrompt = ''
+  modalDataRef.configName = ''
+  modalDataRef.promptHash = ''
+  modalDataRef.sysPromptVersion = 0
+  modalDataRef.showContext = false
+  modalDataRef.longEntryPrice = ''
+  modalDataRef.longStopLossPrice = ''
+  modalDataRef.longTakeProfitPrice = ''
+  modalDataRef.visible = true
+}
+
+const signalColumns = [
+  {
+    title: '股票', key: 'name', width: 180,
+    render: (row) => [
+      h(NText, { type: 'info' }, { default: () => row.name }),
+      h(NText, { depth: 3, style: 'font-size:12px; margin-left:6px;' }, { default: () => row.code })
+    ]
+  },
+  {
+    title: '方向', key: 'kind', width: 70,
+    render: (row) => h(NTag, { size: 'tiny', bordered: false, type: row.kind === 'buy' ? 'error' : 'success' },
+      { default: () => row.kind === 'buy' ? '买点' : '卖点' })
+  },
+  {
+    title: '强度', key: 'score', width: 140,
+    render: (row) => {
+      const score = Number(row.score) || 0
+      return [
+        h(NTag, { size: 'tiny', bordered: false, type: strengthType(score) }, { default: () => `${Math.round((score / BUY_SELL_MAX_SCORE) * 100)}%` }),
+        h(NText, { depth: 3, style: 'font-size:12px; margin-left:6px;' }, { default: () => `${score}/${BUY_SELL_MAX_SCORE} 路` })
+      ]
+    }
+  },
+  { title: '信号时间', key: 'time', width: 140, render: (row) => formatSignalTime(row.time) },
+  { title: '信号价', key: 'price', width: 80, render: (row) => row.price != null ? row.price.toFixed(2) : '-' },
+  {
+    // 最新价：主行为最新价，副行为当日涨跌幅（A股习惯红涨绿跌）
+    title: '最新价', key: 'last', width: 110,
+    render: (row) => {
+      const q = quoteMapRef.value[quoteKey(row.code)]
+      if (!q || !q.price) return h(NText, { depth: 3, style: 'font-size:12px;' }, { default: () => '—' })
+      const pct = Number(q.changePercent) || 0
+      return [
+        h('div', { style: 'font-weight:600;line-height:1.3;' }, { default: () => q.price.toFixed(2) }),
+        h(NText, { type: pct > 0 ? 'error' : pct < 0 ? 'success' : 'default', style: 'font-size:11px;' },
+          { default: () => `今 ${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` })
+      ]
+    }
+  },
+  {
+    // 相对信号点涨跌幅：(最新价 - 信号价) / 信号价；买点看涨、卖点看跌各有含义，按涨跌着色
+    title: '相对信号', key: 'chg', width: 90,
+    render: (row) => {
+      const q = quoteMapRef.value[quoteKey(row.code)]
+      const base = Number(row.price) || 0
+      if (!q || !q.price || !base) return h(NText, { depth: 3, style: 'font-size:12px;' }, { default: () => '—' })
+      const pct = ((q.price - base) / base) * 100
+      return h(NText, { type: pct > 0 ? 'error' : pct < 0 ? 'success' : 'default', strong: true },
+        { default: () => `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` })
+    }
+  },
+  { title: '距最新', key: 'lag', width: 80, render: (row) => row.lag === 0 ? '最新根' : `前 ${row.lag} 根` },
+  { title: '命中信号', key: 'reasons', ellipsis: { tooltip: true }, render: (row) => (row.reasons || []).join('、') || '—' },
+  {
+    title: '操作', key: 'op', width: 70,
+    render: (row) => h(NButton, { size: 'tiny', quaternary: true, onClick: () => openSignalKline(row) }, { default: () => 'K线' })
+  }
+]
+
 </script>
 
 <template>
@@ -831,6 +1110,42 @@ const tableHeightStyle = {
           :style="tableHeightStyle"
       />
     </n-tab-pane>
+    <n-tab-pane name="signal" tab="买卖点信号">
+      <div class="signal-bar">
+        <n-date-picker size="tiny" v-model:value="statsDateRef" type="date" :clearable="false"
+                       style="width: 130px" @update:value="onStatsDateChange" />
+        <n-tag v-for="opt in statsRangeOptions" :key="opt.value" size="small" :bordered="false"
+               :type="statsDaysRef === opt.value ? 'primary' : 'default'" style="cursor:pointer"
+               @click="onStatsRangeChange(opt.value)">{{opt.label}}</n-tag>
+        <n-select size="small" v-model:value="signalKltRef" :options="signalKltOptions" style="width: 110px" />
+        <n-select size="small" v-model:value="signalScoreRef" :options="signalScoreOptions" style="width: 110px" />
+        <n-select size="small" v-model:value="signalDaysRef" :options="signalRangeOptions" style="width: 110px" />
+        <n-button size="small" type="primary" ghost :loading="signalLoading" @click="scanSignals()">扫描买卖点</n-button>
+        <n-select size="small" v-model:value="signalKindRef" :options="signalKindOptions" style="width: 92px" />
+        <n-divider vertical />
+        <n-text depth="3" style="font-size:12px">定时</n-text>
+        <n-switch size="small" v-model:value="signalAutoRef" />
+        <n-select size="small" v-model:value="signalAutoMinRef" :options="signalAutoOptions"
+                  style="width: 92px" :disabled="!signalAutoRef" />
+        <n-text depth="3" style="font-size:12px" v-if="signalLastScanAtRef">上次扫描 {{signalLastScanAtRef}}</n-text>
+        <n-text depth="3" style="font-size:12px" v-if="signalLoading">扫描中 {{signalProgress.done}}/{{signalProgress.total}}</n-text>
+        <n-text depth="3" style="font-size:12px" v-else-if="signalScanned">命中 {{signalCountText}} · 数据不足 {{signalInsufficientRef}} 只</n-text>
+      </div>
+      <n-text depth="3" style="font-size:12px; display:block; margin: 6px 0;">
+        扫描范围：「推荐统计」所选区间（{{todayStatsRef.date || '今日'}}）的推荐股池，按股票代码去重后全量扫描（不限数量）；
+        K 线取最近一年（不低于信号门控所需最少根数），检测口径与「信号监控」面板一致（14 路共振 + 图表门控），强度=命中路数/14。
+        所选时间范围内命中的信号全部列出（同一股票同方向多条信号会逐条展示）。
+        开启「定时」后按间隔自动扫描，发现新增信号推送应用内通知（调整周期/灵敏度/时间范围后的首轮不通知，重新建立基线）。
+      </n-text>
+      <n-data-table
+        size="small"
+        :columns="signalColumns"
+        :data="visibleSignalRows"
+        :loading="signalLoading"
+        :row-key="(row) => row.code + '|' + row.kind + '|' + row.time"
+        :style="{ height: 'max(240px, calc(100vh - 330px))' }"
+      />
+    </n-tab-pane>
   </n-tabs>
 
   <n-modal
@@ -892,6 +1207,14 @@ const tableHeightStyle = {
 </template>
 
 <style scoped>
+/* ===== 买卖点信号 ===== */
+.signal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* ===== 推荐统计 ===== */
 .today-stats {
   border: 1px solid var(--n-border-color);

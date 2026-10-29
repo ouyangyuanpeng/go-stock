@@ -1661,6 +1661,8 @@ type AiAssistantSession struct {
 	SessionId string    `json:"sessionId" gorm:"index;size:64"` // 会话ID，时间戳格式
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	Title     string    `json:"title" gorm:"size:128"` // 用户自定义标题；为空时前端/列表接口回退为正文派生标题
+	Pinned    bool      `json:"pinned"`                // 置顶标记：置顶会话在列表中排在最前
 	Messages  string    `json:"messages" gorm:"type:text"` // JSON 数组，每项 { role, content, reasoning, time, modelName }
 }
 
@@ -1687,6 +1689,14 @@ type AiAssistantMessage struct {
 type AiAssistantSessionResp struct {
 	Messages  []AiAssistantMessage `json:"messages"`
 	SessionId string               `json:"sessionId"`
+}
+
+// AiAssistantSessionMeta 会话元信息（不含完整消息），供前端会话列表展示。
+type AiAssistantSessionMeta struct {
+	SessionId string `json:"sessionId"`
+	Title     string `json:"title"`
+	UpdatedAt string `json:"updatedAt"`
+	Pinned    bool   `json:"pinned"`
 }
 
 type StockRZRQInfoResp struct {
